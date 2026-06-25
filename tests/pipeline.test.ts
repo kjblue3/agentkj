@@ -1,0 +1,35 @@
+import { describe, expect, it } from "vitest";
+import { createConnectors } from "../src/connectors/index.js";
+import { demoEvidence, demoQuestions } from "../src/data/demoData.js";
+import { fallbackSynthesis } from "../src/investigation/fallbackSynthesis.js";
+import { InvestigationPipeline } from "../src/investigation/pipeline.js";
+import type { Synthesizer } from "../src/openai/synthesizer.js";
+
+const deterministicSynthesizer: Synthesizer = {
+  async synthesize(question, evidence, timeline) {
+    return fallbackSynthesis(question, evidence, timeline);
+  }
+};
+
+const pipeline = new InvestigationPipeline(
+  createConnectors(demoEvidence),
+  deterministicSynthesizer
+);
+
+describe("investigation pipeline", () => {
+  it.each(demoQuestions)("returns a meaningful timeline for: %s", async (question) => {
+    const result = await pipeline.investigate(question);
+    expect(result.evidence.length).toBeGreaterThanOrEqual(4);
+    expect(result.timeline.length).toBeGreaterThanOrEqual(4);
+    expect(result.shortAnswer.length).toBeGreaterThan(40);
+    expect(result.confidence).not.toBe("low");
+  });
+
+  it("keeps investigations separated", async () => {
+    const result = await pipeline.investigate("Why was the recommendations launch delayed?");
+    expect(result.evidence.every((item) =>
+      item.tags.includes("recommendations") ||
+      item.entities.some((entity) => entity.toLowerCase().includes("recommend"))
+    )).toBe(true);
+  });
+});

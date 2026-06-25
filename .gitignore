@@ -1,52 +1,14 @@
-# Build
-build/
+node_modules/
+.npm-cache/
 dist/
-docs/_sources/
-docs/.doctrees
-
-# Claude Code
-.claude/*.local.json
-
-# Coverage
-.coverage
-cov_*
-coverage.xml
-
-# Editors
-.idea/
-
-# Environment
-.env*
-!.env.sample
-env*/
-venv/
-.venv*
-
-# Logs
-logs/
-
-# macOS
+coverage/
+.env
+.env.local
+*.log
 .DS_Store
-
-# OAuth
-data/
-
-# Python
+.idea/
+.vscode/
+.claude/*.local.json
+.venv/
 __pycache__/
-*.db
-*.egg
 *.egg-info/
-*.eggs/
-*.py[cod]
-*.so
-.mypy_cache/
-.pytype/
-.python-version
-*~
-pip
-
-# Testing
-.cache
-.pytest_cache/
-.tox
-tmp.txt
