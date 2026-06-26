@@ -15,4 +15,19 @@ describe("fallback synthesis", () => {
     expect(result.likelyRootCause.toLowerCase()).toMatch(/n\+1|root cause/);
     expect(result.recommendedActions).toHaveLength(3);
   });
+
+  it("preserves decimal numbers and dotted versions in the short answer", () => {
+    const evidence = demoEvidence.filter((item) =>
+      ["slack-checkout-1", "incident-checkout-1"].includes(item.id)
+    );
+    const result = fallbackSynthesis(
+      "Why did checkout latency spike?",
+      evidence,
+      buildTimeline(evidence)
+    );
+
+    expect(result.shortAnswer).toContain("p95 rose from 420ms to 2.8s");
+    expect(result.shortAnswer).toContain("checkout-service v2.14.0");
+    expect(result.shortAnswer).not.toMatch(/420ms to 2\.(?:\s|$)/);
+  });
 });

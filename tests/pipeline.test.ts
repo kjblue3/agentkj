@@ -32,4 +32,17 @@ describe("investigation pipeline", () => {
       item.entities.some((entity) => entity.toLowerCase().includes("recommend"))
     )).toBe(true);
   });
+
+  it("keeps Redis and session evidence out of the checkout timeline", async () => {
+    const result = await pipeline.investigate("Why did checkout latency spike?");
+    const timelineEvidenceIds = result.timeline.flatMap((event) => event.evidenceIds);
+    const timelineText = result.timeline
+      .map((event) => `${event.title} ${event.summary}`)
+      .join(" ")
+      .toLowerCase();
+
+    expect(timelineEvidenceIds.some((id) => /redis|session/.test(id))).toBe(false);
+    expect(timelineText).not.toMatch(/\bredis\b|\bsessions?\b/);
+    expect(result.evidence.some((item) => item.tags.includes("redis"))).toBe(false);
+  });
 });
