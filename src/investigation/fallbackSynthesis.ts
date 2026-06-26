@@ -3,10 +3,11 @@ import type {
   InvestigationResult,
   TimelineEvent
 } from "../types/schemas.js";
+import { splitSentences } from "../utils/text.js";
 
 function sentence(body: string, pattern?: RegExp): string {
-  const sentences = body.match(/[^.!?]+[.!?]+/g) ?? [body];
-  return (pattern ? sentences.find((part) => pattern.test(part)) : sentences[0])?.trim() ?? body;
+  const sentences = splitSentences(body);
+  return (pattern ? sentences.find((part) => pattern.test(part)) : sentences[0]) ?? body;
 }
 
 export function fallbackSynthesis(

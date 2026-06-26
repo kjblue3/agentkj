@@ -1,7 +1,8 @@
 import type { EvidenceItem, TimelineEvent } from "../types/schemas.js";
+import { splitSentences } from "../utils/text.js";
 
 function eventSummary(item: EvidenceItem): string {
-  const firstSentence = item.body.match(/^.*?[.!?](?:\s|$)/)?.[0]?.trim();
+  const firstSentence = splitSentences(item.body)[0];
   return firstSentence ?? item.body.slice(0, 180);
 }
 

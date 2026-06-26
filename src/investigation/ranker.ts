@@ -47,6 +47,21 @@ export function scoreEvidence(
   return { item, score: Number(score.toFixed(3)), reasons };
 }
 
+export function isStronglyRelevant(
+  item: EvidenceItem,
+  query: InvestigationQuery
+): boolean {
+  const queryEntityTokens = new Set(query.entities.flatMap(tokenize));
+  if (queryEntityTokens.size === 0) return true;
+
+  const itemTopicTokens = new Set(
+    tokenize(
+      `${item.title} ${item.body} ${item.entities.join(" ")} ${item.tags.join(" ")}`
+    )
+  );
+  return [...queryEntityTokens].some((token) => itemTopicTokens.has(token));
+}
+
 export function rankEvidence(
   items: EvidenceItem[],
   query: InvestigationQuery,
@@ -54,6 +69,7 @@ export function rankEvidence(
 ): RankedEvidence[] {
   const newestTimestamp = Math.max(...items.map((item) => Date.parse(item.timestamp)), Date.now() - 31_536_000_000);
   return items
+    .filter((item) => isStronglyRelevant(item, query))
     .map((item) => scoreEvidence(item, query, newestTimestamp))
     .filter((ranked) => ranked.score >= 4)
     .sort((a, b) => b.score - a.score || Date.parse(b.item.timestamp) - Date.parse(a.item.timestamp))

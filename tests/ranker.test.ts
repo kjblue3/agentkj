@@ -8,6 +8,7 @@ describe("evidence ranking", () => {
     const ranked = rankEvidence(demoEvidence, parseQuestion("Why did checkout latency spike?"), 20);
     expect(ranked[0]?.item.tags).toContain("checkout");
     expect(ranked.some(({ item }) => item.id === "slack-noise-1")).toBe(false);
+    expect(ranked.some(({ item }) => item.tags.includes("redis"))).toBe(false);
     expect(ranked.findIndex(({ item }) => item.id === "incident-checkout-1")).toBeLessThan(5);
   });
 });
