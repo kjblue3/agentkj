@@ -48,6 +48,32 @@ describe("handleCreateFollowupAction", () => {
     expect(args.respond).not.toHaveBeenCalled();
   });
 
+  it("logs a summarized action payload without dumping the raw Slack body", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const args = createArgs({ triggerId: "trigger-123" });
+
+    await handleCreateFollowupAction(args);
+
+    expect(info).toHaveBeenCalledWith(
+      "Slack create_followup action received",
+      expect.objectContaining({
+        actionId: "create_followup",
+        reportId: "report-123",
+        bodyType: "block_actions",
+        userId: "U123",
+        teamId: "T123",
+        channelId: "C123",
+        messageTs: "1710000000.000000",
+        hasTriggerId: true,
+        hasResponseUrl: false
+      })
+    );
+    expect(info.mock.calls[0]?.[1]).not.toHaveProperty("trigger_id");
+    expect(info.mock.calls[0]?.[1]).not.toHaveProperty("message");
+
+    info.mockRestore();
+  });
+
   it("responds ephemerally when trigger_id is missing", async () => {
     const args = createArgs();
 

@@ -51,15 +51,24 @@ export function isStronglyRelevant(
   item: EvidenceItem,
   query: InvestigationQuery
 ): boolean {
-  const queryEntityTokens = new Set(query.entities.flatMap(tokenize));
-  if (queryEntityTokens.size === 0) return true;
-
   const itemTopicTokens = new Set(
     tokenize(
       `${item.title} ${item.body} ${item.entities.join(" ")} ${item.tags.join(" ")}`
     )
   );
-  return [...queryEntityTokens].some((token) => itemTopicTokens.has(token));
+  const queryEntityTokens = new Set(query.entities.flatMap(tokenize));
+  if (queryEntityTokens.size > 0) {
+    return [...queryEntityTokens].some((token) => itemTopicTokens.has(token));
+  }
+
+  const queryTagTokens = new Set(query.tags.flatMap(tokenize));
+  if (queryTagTokens.size > 0) {
+    return [...queryTagTokens].some((token) => itemTopicTokens.has(token));
+  }
+
+  const queryTokens = new Set(query.keywords.flatMap(tokenize));
+  const matches = [...queryTokens].filter((token) => itemTopicTokens.has(token)).length;
+  return matches >= 2;
 }
 
 export function rankEvidence(
