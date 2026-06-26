@@ -4,14 +4,14 @@
 
 Slack Detective investigates workplace questions whose answers are split across chat, code, tickets, docs, and incident reports. Ask `/detective Why did checkout latency spike?` and it searches every source, ranks the clues, reconstructs the causal timeline, and returns a concise Slack-native report with citations and actions.
 
-Local search and synthesis work without paid services. Production-style Slack, GitHub, Jira, Google Drive, and incident connectors can be enabled with environment variables while preserving the deterministic demo fallback.
+Local search and synthesis work without paid services. Production-style Slack, GitHub through MCP, Jira, Google Drive, and incident connectors can be enabled with environment variables while preserving the deterministic demo fallback.
 
 ## What the demo includes
 
 - `/detective` and `@Slack Detective` entry points
 - Block Kit “Detective Report” with evidence, timeline, confidence, and next moves
 - Interactive **Show evidence**, **Show timeline**, **Create follow-up**, and **Mark solved** actions
-- Replaceable real connectors for Slack, GitHub, Jira, Google Docs/Drive, and incident reports
+- Replaceable real connectors for Slack, GitHub MCP, GitHub REST fallback, Jira, Google Docs/Drive, and incident reports
 - Keyword, entity, tag, recency, confidence, and source-authority ranking
 - Optional OpenAI report polishing with deterministic fallback
 - Express API and a realistic 18-record ecommerce dataset
@@ -73,14 +73,39 @@ Set `OPENAI_API_KEY` to enable final report polishing. `OPENAI_MODEL` defaults t
 Real connectors are configured through `.env` and skipped gracefully when credentials are missing:
 
 - Slack: `SLACK_BOT_TOKEN`
-- GitHub: `GITHUB_TOKEN`, `GITHUB_OWNER`, `GITHUB_REPOS`
+- GitHub MCP sandbox: `MCP_GITHUB_ENABLED=true`, `MCP_GITHUB_COMMAND`, `GITHUB_TOKEN`, `GITHUB_OWNER`, `GITHUB_DEMO_REPO`
+- GitHub REST fallback: `GITHUB_TOKEN`, `GITHUB_OWNER`, `GITHUB_REPOS`
 - Jira: `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`, optional `JIRA_PROJECTS`
 - Google Drive: `GOOGLE_SERVICE_ACCOUNT_JSON`, or `GOOGLE_ACCESS_TOKEN`, or `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET`/`GOOGLE_REFRESH_TOKEN`
 - Incidents: `INCIDENT_API_URL` and optional `INCIDENT_API_TOKEN`, or `INCIDENT_DATA_PATH`
 
 See [CONNECTORS.md](./CONNECTORS.md) for credential creation, required scopes, verification steps, and common fixes.
 
-For hackathon judging, `CONNECTOR_MODE=demo` is the safest default: it proves the full Slack workflow without relying on external accounts. Use `CONNECTOR_MODE=hybrid` when you want to show live Slack/GitHub/Jira/Drive/incident evidence alongside the seeded case file.
+For hackathon judging, `CONNECTOR_MODE=demo` is the safest default: it proves the full Slack workflow without relying on external accounts. The recommended live demo is `CONNECTOR_MODE=hybrid` with seeded Slack messages and a real `slack-detective-demo` GitHub sandbox repository queried through MCP.
+
+## Real sandbox demo
+
+Create or seed fictional checkout incident evidence into real Slack and GitHub objects:
+
+```bash
+npm run seed:github-demo
+npm run seed:slack-demo
+```
+
+Required environment:
+
+```env
+CONNECTOR_MODE=hybrid
+MCP_GITHUB_ENABLED=true
+MCP_GITHUB_COMMAND=npx -y @modelcontextprotocol/server-github
+GITHUB_TOKEN=github_pat_...
+GITHUB_OWNER=your-user-or-org
+GITHUB_DEMO_REPO=slack-detective-demo
+SLACK_BOT_TOKEN=xoxb-...
+DEMO_SLACK_CHANNEL_ID=C0123456789
+```
+
+The seeded content is fictional, but the GitHub repo, issues, PR, comments, files, Slack messages, API calls, MCP tool path, and evidence IDs are real. If any credential is missing, demo mode and local fallback evidence still work.
 
 ## Demo cases
 
@@ -101,6 +126,8 @@ For hackathon judging, `CONNECTOR_MODE=demo` is the safest default: it proves th
 
 ```bash
 npm run seed       # write data/evidence.json
+npm run seed:github-demo  # create/update fictional evidence in a real GitHub sandbox repo
+npm run seed:slack-demo   # post fictional incident messages into a real Slack sandbox channel
 npm run dev        # watch-mode API and optional Slack app
 npm run build      # strict TypeScript compile
 npm test           # Vitest suite

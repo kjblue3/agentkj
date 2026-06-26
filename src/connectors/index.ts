@@ -4,6 +4,7 @@ import { GoogleDriveConnector } from "./googleDriveConnector.js";
 import { IncidentConnector } from "./incidentConnector.js";
 import { JiraConnector } from "./jiraConnector.js";
 import { LocalConnector } from "./localConnector.js";
+import { McpGitHubConnector } from "./mcpGitHubConnector.js";
 import { SlackConnector } from "./slackConnector.js";
 import type { EvidenceConnector } from "./types.js";
 import { warnMissingConnector } from "./connectorUtils.js";
@@ -51,9 +52,31 @@ function createRealConnectors(env: NodeJS.ProcessEnv): EvidenceConnector[] {
   }
 
   const githubRepos = splitList(env.GITHUB_REPOS);
-  if (env.GITHUB_TOKEN && env.GITHUB_OWNER && githubRepos.length > 0) {
+  const githubDemoRepo = env.GITHUB_DEMO_REPO?.trim();
+  const githubMcpConfigured = env.MCP_GITHUB_ENABLED === "true"
+    && Boolean(env.GITHUB_OWNER)
+    && Boolean(githubDemoRepo || githubRepos[0])
+    && Boolean(env.MCP_GITHUB_COMMAND);
+  if (env.MCP_GITHUB_ENABLED === "true" && env.GITHUB_OWNER && (githubDemoRepo || githubRepos[0]) && env.MCP_GITHUB_COMMAND) {
+    connectors.push(new McpGitHubConnector({
+      owner: env.GITHUB_OWNER,
+      repo: githubDemoRepo || githubRepos[0]!,
+      command: env.MCP_GITHUB_COMMAND,
+      toolNames: {
+        searchIssues: env.MCP_GITHUB_SEARCH_ISSUES_TOOL,
+        searchCode: env.MCP_GITHUB_SEARCH_CODE_TOOL,
+        getIssue: env.MCP_GITHUB_GET_ISSUE_TOOL,
+        getPullRequest: env.MCP_GITHUB_GET_PULL_REQUEST_TOOL,
+        getFileContents: env.MCP_GITHUB_GET_FILE_TOOL
+      }
+    }));
+  } else if (env.MCP_GITHUB_ENABLED === "true") {
+    warnMissingConnector("GitHub MCP", ["GITHUB_OWNER", "GITHUB_DEMO_REPO or GITHUB_REPOS", "MCP_GITHUB_COMMAND"]);
+  }
+
+  if (!githubMcpConfigured && env.GITHUB_TOKEN && env.GITHUB_OWNER && githubRepos.length > 0) {
     connectors.push(new GitHubConnector(env.GITHUB_TOKEN, env.GITHUB_OWNER, githubRepos));
-  } else {
+  } else if (!githubMcpConfigured) {
     warnMissingConnector("GitHub", ["GITHUB_TOKEN", "GITHUB_OWNER", "GITHUB_REPOS"]);
   }
 

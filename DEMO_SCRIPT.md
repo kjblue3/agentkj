@@ -4,7 +4,7 @@
 
 “When something goes wrong at work, the answer is rarely in one place. It is in a Slack thread, a PR comment, a ticket, a design decision, and an incident report. Slack Detective turns that scattered trail into one evidence-backed case file.”
 
-Show Slack with the app installed as **Slack Detective**. Open a channel such as `#checkout-alerts`, mention that this demo uses judge-safe seeded evidence unless `CONNECTOR_MODE=hybrid` is enabled, then run:
+Show Slack with the app installed as **Slack Detective**. Open a channel such as `#checkout-alerts`, mention that the safest fallback is local seeded evidence, while the live demo mode uses real seeded Slack messages and a real GitHub sandbox repo queried through MCP. Then run:
 
 > Why did checkout latency spike?
 
@@ -19,7 +19,7 @@ As the report appears, point out:
 - the visible source mode line, such as `Sources: demo · 5 sources` or `Sources: hybrid · ...`;
 - source links rather than unsupported prose.
 
-Click **Show evidence**. Highlight the Slack alert, PR, Jira complaints, incident report, and follow-up doc.
+Click **Show evidence**. In hybrid mode, highlight real `slack:` message IDs and GitHub evidence from the MCP-backed sandbox repo. In demo fallback mode, highlight the Slack alert, PR, Jira complaints, incident report, and follow-up doc.
 
 Click **Show timeline**. Explain that this is reconstructed from normalized records rather than a hardcoded answer.
 
@@ -41,7 +41,7 @@ This demonstrates historical decision retrieval, rejected alternatives, incident
 
 Click **Create follow-up** to open the Slack modal, then **Mark solved**.
 
-Say: “OpenAI can polish the final report, but search, scoring, evidence selection, timeline construction, and fallback synthesis are deterministic. If the OpenAI key or a production connector is unavailable during judging, demo mode still proves the full Slack workflow.”
+Say: “OpenAI can polish the final report, but search, scoring, evidence selection, timeline construction, and fallback synthesis are deterministic. The live path uses real seeded Slack messages and a real GitHub sandbox through MCP; if credentials are unavailable during judging, demo mode still proves the full Slack workflow.”
 
 ## 2:40–3:00 — Close
 

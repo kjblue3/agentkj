@@ -7,7 +7,9 @@ import { GitHubConnector } from "../src/connectors/githubConnector.js";
 import { GoogleDriveConnector } from "../src/connectors/googleDriveConnector.js";
 import { IncidentConnector } from "../src/connectors/incidentConnector.js";
 import { JiraConnector } from "../src/connectors/jiraConnector.js";
+import { McpGitHubConnector } from "../src/connectors/mcpGitHubConnector.js";
 import { SlackConnector } from "../src/connectors/slackConnector.js";
+import type { McpToolClient } from "../src/connectors/mcpClient.js";
 import type { InvestigationQuery } from "../src/types/schemas.js";
 
 const query: InvestigationQuery = {
@@ -72,6 +74,63 @@ describe("real evidence connectors", () => {
     expect(results.map((item) => item.source)).toEqual(["github", "github"]);
     expect(results[0]?.tags).toContain("latency");
     expect(results[1]?.id).toContain("github:code:acme/shop");
+  });
+
+  it("normalizes GitHub MCP issue and code tool responses", async () => {
+    const client: McpToolClient = {
+      async listTools() {
+        return [{ name: "search_issues" }, { name: "search_code" }, { name: "get_issue" }];
+      },
+      async callTool(name: string) {
+        if (name === "search_issues") {
+          return {
+            content: [{
+              type: "text",
+              text: JSON.stringify({
+                items: [{
+                  number: 1842,
+                  title: "Regional tax calculation",
+                  body: "Review found a tax_rule lookup inside the cart item loop.",
+                  html_url: "https://github.com/acme/slack-detective-demo/pull/1842",
+                  updated_at: "2026-05-14T16:00:00Z",
+                  user: { login: "leo" },
+                  labels: [{ name: "n+1" }],
+                  repository: { full_name: "acme/slack-detective-demo" },
+                  pull_request: {}
+                }]
+              })
+            }]
+          };
+        }
+
+        return {
+          structuredContent: {
+            items: [{
+              name: "taxRules.ts",
+              path: "src/checkout/taxRules.ts",
+              sha: "def456",
+              html_url: "https://github.com/acme/slack-detective-demo/blob/main/src/checkout/taxRules.ts",
+              repository: { full_name: "acme/slack-detective-demo" },
+              text: "loadTaxRule is called inside the cart item loop."
+            }]
+          }
+        };
+      },
+      async close() {
+        return undefined;
+      }
+    };
+
+    const results = await new McpGitHubConnector({
+      owner: "acme",
+      repo: "slack-detective-demo",
+      client
+    }).search(query);
+
+    expect(results).toHaveLength(2);
+    expect(results[0]?.id).toBe("github:issue:acme/slack-detective-demo:1842");
+    expect(results[0]?.tags).toContain("mcp");
+    expect(results[1]?.body).toContain("loadTaxRule");
   });
 
   it("normalizes Jira issues and comments", async () => {
@@ -162,6 +221,24 @@ describe("real evidence connectors", () => {
     expect(connectors).toHaveLength(5);
     expect(connectors.map((connector) => connector.name)).toContain("Slack messages");
     expect(effectiveConnectorMode(connectors, { CONNECTOR_MODE: "real" })).toBe("demo");
+    warn.mockRestore();
+  });
+
+  it("uses GitHub MCP when MCP_GITHUB_ENABLED is true", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    const connectors = createConnectors([], {
+      CONNECTOR_MODE: "real",
+      MCP_GITHUB_ENABLED: "true",
+      MCP_GITHUB_COMMAND: "node fake-github-mcp.js",
+      GITHUB_OWNER: "acme",
+      GITHUB_DEMO_REPO: "slack-detective-demo",
+      GITHUB_TOKEN: "ghp-test",
+      GITHUB_REPOS: "legacy-repo"
+    });
+
+    expect(connectors.map((connector) => connector.name)).toEqual(["GitHub MCP"]);
+    expect(effectiveConnectorMode(connectors, { CONNECTOR_MODE: "real" })).toBe("real");
     warn.mockRestore();
   });
 });
