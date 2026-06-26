@@ -30,4 +30,22 @@ describe("fallback synthesis", () => {
     expect(result.shortAnswer).toContain("checkout-service v2.14.0");
     expect(result.shortAnswer).not.toMatch(/420ms to 2\.(?:\s|$)/);
   });
+
+  it("generates grammatical Redis questions from structured evidence", () => {
+    const evidence = demoEvidence.filter((item) => item.tags.includes("sessions"));
+    const result = fallbackSynthesis(
+      "Why are we still using Redis for sessions?",
+      evidence,
+      buildTimeline(evidence)
+    );
+
+    expect(result.openQuestions).toEqual([
+      "Who owns the next Redis session architecture review?",
+      "What design would preserve 60-second revocation without requiring Redis?",
+      "Are Redis failover protections now covered by automated tests or alerts?"
+    ]);
+    expect(result.openQuestions.join(" ")).not.toContain(
+      "Sam confirms Identity Platform"
+    );
+  });
 });
