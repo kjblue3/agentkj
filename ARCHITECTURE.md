@@ -1,6 +1,6 @@
 # Architecture
 
-Slack Detective is a modular retrieval-and-synthesis pipeline. Slack and HTTP are thin delivery layers over the same `InvestigationPipeline`. The hackathon submission claims Slack search/Real-Time Search-style evidence retrieval through the Slack connector, plus production-style connectors for GitHub, Jira, Google Drive, and incident systems. MCP is not claimed unless a separate MCP connector is added and demoed.
+Slack Detective is a modular retrieval-and-synthesis pipeline. Slack and HTTP are thin delivery layers over the same `InvestigationPipeline`. The hackathon submission claims Slack search/Real-Time Search-style evidence retrieval through the Slack connector, plus MCP-backed GitHub sandbox retrieval and production-style connectors for Jira, Google Drive, incident systems, and GitHub REST fallback.
 
 ```mermaid
 flowchart LR
@@ -9,6 +9,8 @@ flowchart LR
   M -->|demo| D[Local demo evidence]
   M -->|hybrid| H[Real connectors + local fallback]
   M -->|real| X[Configured real connectors]
+  G[GitHub MCP server] --> H
+  G --> X
   D --> C[Evidence adapter contract]
   H --> C
   X --> C
@@ -25,7 +27,7 @@ flowchart LR
 ## Pipeline stages
 
 1. **Parse:** tokenizes the question and adds a small, explicit synonym expansion.
-2. **Search:** calls all enabled adapters concurrently. Demo mode searches local records; hybrid mode searches configured vendor APIs plus local fallback; real mode searches configured vendor APIs and falls back to demo only when none are configured.
+2. **Search:** calls all enabled adapters concurrently. Demo mode searches local records; hybrid mode searches configured vendor APIs/MCP tools plus local fallback; real mode searches configured vendor APIs/MCP tools and falls back to demo only when none are configured.
 3. **Normalize:** every clue is validated as an `EvidenceItem` with Zod.
 4. **Rank:** combines keyword overlap, entity matches, tags, recency, source authority, and record confidence.
 5. **Cluster:** groups related same-day evidence into events and sorts it chronologically.
@@ -42,7 +44,7 @@ interface EvidenceConnector {
 }
 ```
 
-Adding or replacing a connector does not change ranking, synthesis, Slack, or API code. Authentication, pagination, and source-specific mapping stay inside the adapter.
+Adding or replacing a connector does not change ranking, synthesis, Slack, or API code. Authentication, MCP tool calls, pagination, and source-specific mapping stay inside the adapter.
 
 ## Grounding and graceful degradation
 
@@ -54,4 +56,4 @@ Adding or replacing a connector does not change ranking, synthesis, Slack, or AP
 
 ## MVP tradeoffs
 
-Local JSON keeps setup instant and demos deterministic. Real connectors are available for Slack, GitHub, Jira, Google Drive, and incidents, but production deployment would still need deeper OAuth onboarding, persistent report/follow-up storage, access-control filtering, audit logs, pagination hardening, and evaluation telemetry.
+Local JSON keeps setup instant and demos deterministic. Real connectors are available for Slack, GitHub MCP, GitHub REST fallback, Jira, Google Drive, and incidents, but production deployment would still need deeper OAuth onboarding, persistent report/follow-up storage, access-control filtering, audit logs, pagination hardening, MCP server lifecycle management, and evaluation telemetry.

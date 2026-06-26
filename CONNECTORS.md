@@ -60,43 +60,85 @@ Verify:
 
 Ask a question that uses words from a real Slack thread. Returned evidence IDs should start with `slack:`.
 
+Seeded checkout demo:
+
+```env
+SLACK_BOT_TOKEN=xoxb-...
+DEMO_SLACK_CHANNEL_ID=C0123456789
+```
+
+Run:
+
+```bash
+npm run seed:slack-demo
+```
+
+The command posts fictional checkout incident messages into the real sandbox channel and skips posting if the demo marker is already present. For the recommended hybrid demo, ask `/detective Why did checkout latency spike?` and confirm evidence includes real Slack IDs such as `slack:C...:<ts>`.
+
 Common failures:
 
 - `missing_scope`: add the scope, reinstall the Slack app, and update the token.
 - Empty results: Slack search only returns content the installed token can access.
 - Socket Mode disabled: set `SLACK_APP_TOKEN`; the HTTP API still works without it.
 
-## GitHub
+## GitHub MCP Sandbox
 
 Environment:
 
 ```env
 CONNECTOR_MODE=hybrid
+MCP_GITHUB_ENABLED=true
+MCP_GITHUB_COMMAND=npx -y @modelcontextprotocol/server-github
+GITHUB_TOKEN=github_pat_...
+GITHUB_OWNER=your-user-or-org
+GITHUB_DEMO_REPO=slack-detective-demo
+```
+
+This is the recommended live demo path. Slack Detective seeds fictional checkout incident evidence into a real GitHub repository, then retrieves GitHub evidence through a real MCP GitHub server. The data is fake; the repo, issue, PR, labels, comments, files, MCP connection, and normalized `github:` evidence IDs are real.
+
+Create credentials and seed:
+
+1. In GitHub, create a fine-grained personal access token.
+2. Scope it to `GITHUB_OWNER/GITHUB_DEMO_REPO`, or allow it to create that sandbox repo.
+3. Grant read/write permissions for Issues, Pull requests, Contents, and Metadata.
+4. Run `npm run seed:github-demo`.
+5. Start the app with `CONNECTOR_MODE=hybrid` and the GitHub MCP server command configured.
+
+What it searches:
+
+- MCP GitHub issue and pull request search for the sandbox repo.
+- MCP GitHub code/file search for seeded markdown context and checkout code artifacts.
+- `getById` lookups for normalized GitHub issue and code evidence.
+
+Verify:
+
+Ask:
+
+```text
+Why did checkout latency spike?
+```
+
+Evidence should include connector `GitHub MCP`, source `github`, and IDs such as `github:issue:your-owner/slack-detective-demo:<number>` or `github:code:...`.
+
+Common failures:
+
+- MCP process does not start: confirm `MCP_GITHUB_COMMAND` runs in your terminal and receives `GITHUB_TOKEN`.
+- Tool name mismatch: set `MCP_GITHUB_SEARCH_ISSUES_TOOL`, `MCP_GITHUB_SEARCH_CODE_TOOL`, `MCP_GITHUB_GET_ISSUE_TOOL`, `MCP_GITHUB_GET_PULL_REQUEST_TOOL`, or `MCP_GITHUB_GET_FILE_TOOL`.
+- Empty results: run `npm run seed:github-demo` and confirm the sandbox issue, PR, labels, comments, and docs exist in GitHub.
+
+## GitHub REST Fallback
+
+Environment:
+
+```env
+CONNECTOR_MODE=hybrid
+MCP_GITHUB_ENABLED=false
 GITHUB_TOKEN=github_pat_...
 GITHUB_OWNER=your-org
 GITHUB_REPOS=repo-one,repo-two
 ```
 
-Create credentials:
-
-1. In GitHub, create a fine-grained personal access token.
-2. Scope it to the owner and repositories in `GITHUB_REPOS`.
-3. Grant read-only permissions for Issues, Pull requests, Contents, and Metadata.
-
-What it searches:
-
-- Issues and pull requests, including title, body, and comments where GitHub search supports them.
-- Code search matches in configured repositories.
-
-Verify:
-
-Ask about a known issue, PR, or code symbol. Evidence IDs should start with `github:issue:` or `github:code:`.
-
-Common failures:
-
-- `401`: token is invalid or expired.
-- `403`: token lacks repository access or search rate limits were reached.
-- Empty code results: fine-grained tokens must have Contents read permission.
+The direct REST connector remains available when MCP is not enabled or not fully configured. It searches GitHub issues, pull requests, and code directly through the GitHub REST API and normalizes results into the same `EvidenceItem` shape.
 
 ## Jira
 

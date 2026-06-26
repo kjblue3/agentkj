@@ -9,6 +9,8 @@
     "start": "node dist/src/app.js",
     "build": "tsc -p tsconfig.json",
     "seed": "tsx src/data/seed.ts",
+    "seed:github-demo": "tsx src/data/githubDemoSeed.ts",
+    "seed:slack-demo": "tsx src/data/slackDemoSeed.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "check": "npm run build && npm test"
