@@ -45,4 +45,23 @@ describe("investigation pipeline", () => {
     expect(timelineText).not.toMatch(/\bredis\b|\bsessions?\b/);
     expect(result.evidence.some((item) => item.tags.includes("redis"))).toBe(false);
   });
+
+  it("returns clean, topic-aware open questions for Redis sessions", async () => {
+    const result = await pipeline.investigate(
+      "Why are we still using Redis for sessions?"
+    );
+
+    expect(result.openQuestions).toContain(
+      "Who owns the next Redis session architecture review?"
+    );
+    expect(result.openQuestions).toContain(
+      "What design would preserve 60-second revocation without requiring Redis?"
+    );
+    expect(result.openQuestions).toContain(
+      "Are Redis failover protections now covered by automated tests or alerts?"
+    );
+    expect(result.openQuestions.join(" ")).not.toMatch(
+      /Sam confirms|still owns the Redis session service/
+    );
+  });
 });
