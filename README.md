@@ -4,14 +4,14 @@
 
 Slack Detective investigates workplace questions whose answers are split across chat, code, tickets, docs, and incident reports. Ask `/detective Why did checkout latency spike?` and it searches every source, ranks the clues, reconstructs the causal timeline, and returns a concise Slack-native report with citations and actions.
 
-This is a demo-ready hackathon MVP: local search and synthesis work without paid services, while Slack and OpenAI can be enabled with environment variables.
+Local search and synthesis work without paid services. Production-style Slack, GitHub, Jira, Google Drive, and incident connectors can be enabled with environment variables while preserving the deterministic demo fallback.
 
 ## What the demo includes
 
 - `/detective` and `@Slack Detective` entry points
 - Block Kit “Detective Report” with evidence, timeline, confidence, and next moves
 - Interactive **Show evidence**, **Show timeline**, **Create follow-up**, and **Mark solved** actions
-- Replaceable adapters for Slack, GitHub, Jira, Google Docs, and incident reports
+- Replaceable real connectors for Slack, GitHub, Jira, Google Docs/Drive, and incident reports
 - Keyword, entity, tag, recency, confidence, and source-authority ranking
 - Optional OpenAI report polishing with deterministic fallback
 - Express API and a realistic 18-record ecommerce dataset
@@ -46,6 +46,8 @@ Invoke-RestMethod http://localhost:3000/investigate `
   -Body '{"question":"Why did checkout latency spike?"}'
 ```
 
+The JSON response includes `sourceMode` and `connectors`, so judges can see whether a report came from demo, hybrid, or real connector mode.
+
 ## Slack setup
 
 1. Create a Slack app from [manifest.json](./manifest.json).
@@ -59,6 +61,26 @@ Socket Mode means the demo does not need a public tunnel.
 ## Optional OpenAI setup
 
 Set `OPENAI_API_KEY` to enable final report polishing. `OPENAI_MODEL` defaults to `gpt-4.1-mini`. Search and ranking remain local, and any API error automatically falls back to deterministic synthesis.
+
+## Connector setup
+
+`CONNECTOR_MODE` controls evidence sources:
+
+- `demo`: local bundled or `DATA_PATH` evidence only. This is the default.
+- `real`: only configured production connectors. If none are configured, the app warns and falls back to demo evidence.
+- `hybrid`: configured production connectors plus local evidence fallback.
+
+Real connectors are configured through `.env` and skipped gracefully when credentials are missing:
+
+- Slack: `SLACK_BOT_TOKEN`
+- GitHub: `GITHUB_TOKEN`, `GITHUB_OWNER`, `GITHUB_REPOS`
+- Jira: `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`, optional `JIRA_PROJECTS`
+- Google Drive: `GOOGLE_SERVICE_ACCOUNT_JSON`, or `GOOGLE_ACCESS_TOKEN`, or `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET`/`GOOGLE_REFRESH_TOKEN`
+- Incidents: `INCIDENT_API_URL` and optional `INCIDENT_API_TOKEN`, or `INCIDENT_DATA_PATH`
+
+See [CONNECTORS.md](./CONNECTORS.md) for credential creation, required scopes, verification steps, and common fixes.
+
+For hackathon judging, `CONNECTOR_MODE=demo` is the safest default: it proves the full Slack workflow without relying on external accounts. Use `CONNECTOR_MODE=hybrid` when you want to show live Slack/GitHub/Jira/Drive/incident evidence alongside the seeded case file.
 
 ## Demo cases
 
@@ -99,10 +121,10 @@ src/
 tests/             Ranking, normalization, pipeline, fallback, API
 ```
 
-## Real versus mocked
+## Real versus demo
 
-Implemented end to end: pipeline, normalized schemas, local multi-source search, ranking, timeline creation, fallback synthesis, OpenAI integration, API, Slack commands/events/actions, seed command, tests, and docs.
+Implemented end to end: pipeline, normalized schemas, local multi-source search, production-style source connectors, ranking, timeline creation, fallback synthesis, OpenAI integration, API, Slack commands/events/actions, seed command, tests, and docs.
 
-Mocked for the hackathon: source adapters read the local demo dataset; follow-up creation confirms the modal rather than writing to Jira; evidence URLs use a demo domain; report cache is in memory. Each connector already implements the same `search`/`getById` contract needed for real APIs.
+Demo mode reads the local dataset and needs no credentials. Real and hybrid modes search each configured external source directly through its connector, normalize the returned records, and preserve the same `search`/`getById` contract used by the pipeline.
 
 See [ARCHITECTURE.md](./ARCHITECTURE.md), [DEMO_SCRIPT.md](./DEMO_SCRIPT.md), and [SUBMISSION_NOTES.md](./SUBMISSION_NOTES.md).

@@ -62,6 +62,7 @@ describe("Slack Block Kit rendering", () => {
       "actions"
     ]);
     expect(text).toContain("*Case:* Why did checkout latency spike?");
+    expect(text).toContain("*Sources:* demo");
     expect(text).toContain("*Short answer*");
     expect(text).toContain("*Likely root cause*");
     expect(text).toContain("*Causal timeline*");

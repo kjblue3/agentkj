@@ -1,11 +1,17 @@
 # Architecture
 
-Slack Detective is a modular retrieval-and-synthesis pipeline. Slack and HTTP are thin delivery layers over the same `InvestigationPipeline`.
+Slack Detective is a modular retrieval-and-synthesis pipeline. Slack and HTTP are thin delivery layers over the same `InvestigationPipeline`. The hackathon submission claims Slack search/Real-Time Search-style evidence retrieval through the Slack connector, plus production-style connectors for GitHub, Jira, Google Drive, and incident systems. MCP is not claimed unless a separate MCP connector is added and demoed.
 
 ```mermaid
 flowchart LR
   Q[Question] --> P[Parse and expand]
-  P --> C[Five source adapters]
+  P --> M{CONNECTOR_MODE}
+  M -->|demo| D[Local demo evidence]
+  M -->|hybrid| H[Real connectors + local fallback]
+  M -->|real| X[Configured real connectors]
+  D --> C[Evidence adapter contract]
+  H --> C
+  X --> C
   C --> N[Normalize with Zod]
   N --> R[Rank locally]
   R --> T[Cluster and order events]
@@ -19,7 +25,7 @@ flowchart LR
 ## Pipeline stages
 
 1. **Parse:** tokenizes the question and adds a small, explicit synonym expansion.
-2. **Search:** calls all adapters concurrently. The demo adapters search local records; real adapters can call vendor APIs.
+2. **Search:** calls all enabled adapters concurrently. Demo mode searches local records; hybrid mode searches configured vendor APIs plus local fallback; real mode searches configured vendor APIs and falls back to demo only when none are configured.
 3. **Normalize:** every clue is validated as an `EvidenceItem` with Zod.
 4. **Rank:** combines keyword overlap, entity matches, tags, recency, source authority, and record confidence.
 5. **Cluster:** groups related same-day evidence into events and sorts it chronologically.
@@ -36,15 +42,16 @@ interface EvidenceConnector {
 }
 ```
 
-Adding a real connector does not change ranking, synthesis, Slack, or API code. Authentication, pagination, and source-specific mapping stay inside the adapter.
+Adding or replacing a connector does not change ranking, synthesis, Slack, or API code. Authentication, pagination, and source-specific mapping stay inside the adapter.
 
 ## Grounding and graceful degradation
 
 - Search is never delegated to the language model.
+- Responses include `sourceMode` and connector names so judges can see whether a report came from demo, hybrid, or real mode.
 - The ranked evidence list and generated timeline are treated as immutable inputs to OpenAI.
 - OpenAI output is validated; malformed output or network failure uses the local fallback.
 - Important Slack claims sit next to source links, and expanded views expose evidence IDs.
 
 ## MVP tradeoffs
 
-Local JSON keeps setup instant and demos deterministic. Production work would add OAuth-backed connectors, persistent report/follow-up storage, access-control filtering, audit logs, pagination, and evaluation telemetry.
+Local JSON keeps setup instant and demos deterministic. Real connectors are available for Slack, GitHub, Jira, Google Drive, and incidents, but production deployment would still need deeper OAuth onboarding, persistent report/follow-up storage, access-control filtering, audit logs, pagination hardening, and evaluation telemetry.

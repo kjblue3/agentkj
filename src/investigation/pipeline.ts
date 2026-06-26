@@ -5,10 +5,16 @@ import { parseQuestion } from "./queryParser.js";
 import { rankEvidence } from "./ranker.js";
 import { buildTimeline } from "./timeline.js";
 
+type InvestigationPipelineMetadata = {
+  sourceMode?: InvestigationResult["sourceMode"];
+  connectors?: string[];
+};
+
 export class InvestigationPipeline {
   constructor(
     private readonly connectors: EvidenceConnector[],
-    private readonly synthesizer: Synthesizer
+    private readonly synthesizer: Synthesizer,
+    private readonly metadata: InvestigationPipelineMetadata = { sourceMode: "demo" }
   ) {}
 
   async investigate(question: string): Promise<InvestigationResult> {
@@ -23,7 +29,12 @@ export class InvestigationPipeline {
       confidence: Math.min(1, Math.max(item.confidence ?? 0.5, score / 20))
     }));
     const timeline = buildTimeline(evidence);
-    return this.synthesizer.synthesize(question, evidence, timeline);
+    const result = await this.synthesizer.synthesize(question, evidence, timeline);
+    return {
+      ...result,
+      sourceMode: this.metadata.sourceMode,
+      connectors: this.metadata.connectors ?? this.connectors.map((connector) => connector.name)
+    };
   }
 
   async getEvidence(id: string) {

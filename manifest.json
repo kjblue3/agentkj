@@ -1,6 +1,7 @@
 {
     "display_information": {
-        "name": "agentkj"
+        "name": "Slack Detective",
+        "description": "Evidence-backed workplace investigations inside Slack."
     },
     "features": {
         "app_home": {
@@ -9,7 +10,7 @@
             "messages_tab_read_only_enabled": false
         },
         "bot_user": {
-            "display_name": "agentkj",
+            "display_name": "Slack Detective",
             "always_online": true
         },
         "slash_commands": [
@@ -21,8 +22,17 @@
             }
         ],
         "assistant_view": {
-            "assistant_description": "Hi, I am an agent built using Bolt for Python. I am here to help you out!",
-            "suggested_prompts": []
+            "assistant_description": "Ask Slack Detective why something happened at work. It searches accessible evidence, reconstructs a timeline, and returns a cited report.",
+            "suggested_prompts": [
+                {
+                    "title": "Investigate checkout latency",
+                    "message": "Why did checkout latency spike?"
+                },
+                {
+                    "title": "Investigate launch delay",
+                    "message": "Why was the recommendations launch delayed?"
+                }
+            ]
         }
     },
     "oauth_config": {

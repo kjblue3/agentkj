@@ -25,6 +25,8 @@ describe("HTTP API", () => {
       .post("/investigate")
       .send({ question: "Why did checkout latency spike?" });
     expect(response.status).toBe(200);
+    expect(response.body.sourceMode).toBe("demo");
+    expect(response.body.connectors).toContain("Slack messages");
     expect(response.body.timeline.length).toBeGreaterThan(2);
   });
 

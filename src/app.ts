@@ -1,7 +1,7 @@
 import "dotenv/config";
 import { createServer } from "node:http";
 import { createApi } from "./api/server.js";
-import { createConnectors } from "./connectors/index.js";
+import { createConnectors, effectiveConnectorMode } from "./connectors/index.js";
 import { loadEvidence } from "./data/store.js";
 import { InvestigationPipeline } from "./investigation/pipeline.js";
 import { ReportSynthesizer } from "./openai/synthesizer.js";
@@ -9,9 +9,14 @@ import { createSlackApp } from "./slack/app.js";
 
 export async function createApplication() {
   const evidence = await loadEvidence();
+  const connectors = createConnectors(evidence);
   const pipeline = new InvestigationPipeline(
-    createConnectors(evidence),
-    new ReportSynthesizer()
+    connectors,
+    new ReportSynthesizer(),
+    {
+      sourceMode: effectiveConnectorMode(connectors),
+      connectors: connectors.map((connector) => connector.name)
+    }
   );
   return {
     api: createApi(pipeline),
