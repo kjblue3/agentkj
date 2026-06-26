@@ -4,7 +4,7 @@
 
 “When something goes wrong at work, the answer is rarely in one place. It is in a Slack thread, a PR comment, a ticket, a design decision, and an incident report. Slack Detective turns that scattered trail into one evidence-backed case file.”
 
-Show `/detective` and enter:
+Show Slack with the app installed as **Slack Detective**. Open a channel such as `#checkout-alerts`, mention that this demo uses judge-safe seeded evidence unless `CONNECTOR_MODE=hybrid` is enabled, then run:
 
 > Why did checkout latency spike?
 
@@ -16,6 +16,7 @@ As the report appears, point out:
 - the named N+1 root cause;
 - the chronological deployment, customer impact, rollback, and remediation;
 - high confidence based on corroboration across sources;
+- the visible source mode line, such as `Sources: demo · 5 sources` or `Sources: hybrid · ...`;
 - source links rather than unsupported prose.
 
 Click **Show evidence**. Highlight the Slack alert, PR, Jira complaints, incident report, and follow-up doc.
@@ -40,7 +41,7 @@ This demonstrates historical decision retrieval, rejected alternatives, incident
 
 Click **Create follow-up** to open the Slack modal, then **Mark solved**.
 
-Say: “OpenAI can polish the final report, but the search, scoring, evidence, timeline, and fallback all run locally. If the key or network disappears during judging, the demo still works.”
+Say: “OpenAI can polish the final report, but search, scoring, evidence selection, timeline construction, and fallback synthesis are deterministic. If the OpenAI key or a production connector is unavailable during judging, demo mode still proves the full Slack workflow.”
 
 ## 2:40–3:00 — Close
 

@@ -8,7 +8,11 @@
 
 **App description:** Ask a workplace “why” question and Slack Detective searches chat, code, tickets, docs, and incidents to reconstruct the causal timeline, identify the likely root cause, and deliver a concise cited report inside Slack.
 
-**Project summary:** Slack Detective is an investigation layer for institutional memory. It converts fragmented operational records into a ranked evidence board, causal timeline, confidence assessment, and actionable follow-ups. The MVP uses replaceable local adapters and optional OpenAI synthesis, so it is fast to demo, cheap to run, and designed to grow into real enterprise connectors.
+**Project summary:** Slack Detective is an investigation layer for institutional memory. It converts fragmented operational records into a ranked evidence board, causal timeline, confidence assessment, and actionable follow-ups. The MVP has a judge-safe local demo mode, optional real connectors, and optional OpenAI synthesis, so it can be evaluated reliably while still showing the path to production deployment.
+
+## Recommended track
+
+Submit as **New Slack Agent**. The strongest required-technology claim is Slack-native agent workflow plus Slack search/Real-Time Search-style retrieval through the Slack connector. Do not claim MCP integration unless an actual MCP connector is added and shown in the demo.
 
 ## Judging criteria alignment
 
@@ -16,9 +20,10 @@
 
 - A complete TypeScript application using Slack Bolt, Express, Zod, OpenAI, and Vitest.
 - One reusable pipeline powers slash commands, mentions, interactive actions, and HTTP endpoints.
-- Five replaceable connector adapters normalize heterogeneous records into one schema.
+- Five replaceable connector adapters normalize heterogeneous records into one schema, with demo, hybrid, and real runtime modes.
 - Local ranking blends lexical relevance, entities, tags, recency, authority, and confidence.
 - OpenAI is constrained to synthesis and has a validated deterministic fallback.
+- Results expose `sourceMode` and connector names so judges can verify demo versus real/hybrid operation.
 
 ### Design
 
@@ -40,4 +45,12 @@ The core insight is that workplace answers are causal graphs hidden across syste
 
 ## Scope boundary
 
-Real vendor API calls, enterprise permissions, persistent tickets, and production storage are intentionally mocked. The demo proves the full interaction and reasoning architecture without requiring paid services or fragile external setup.
+Demo mode uses a local evidence dataset so judging does not depend on paid services or fragile external setup. Real/hybrid connector modes are implemented for Slack, GitHub, Jira, Google Drive, and incident records, but production deployment would still need organization-specific OAuth approval, access-control review, persistence, audit logs, and deeper pagination/rate-limit hardening.
+
+## Submission checklist
+
+- Record a ~3-minute video using [DEMO_SCRIPT.md](./DEMO_SCRIPT.md).
+- Include [ARCHITECTURE.md](./ARCHITECTURE.md) as the architecture diagram/source.
+- Share the Slack developer sandbox URL.
+- Invite `slackhack@salesforce.com` and `testing@devpost.com` to the sandbox.
+- If submitting to the Organizations track, include the Slack App ID and Marketplace submission proof.

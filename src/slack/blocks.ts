@@ -138,7 +138,8 @@ export function buildReportBlocks(report: InvestigationResult, reportId: string)
       type: "context",
       elements: [
         { type: "mrkdwn", text: `*Case:* ${report.question}` },
-        { type: "mrkdwn", text: `*Confidence:* ${confidenceBadge(report.confidence)}` }
+        { type: "mrkdwn", text: `*Confidence:* ${confidenceBadge(report.confidence)}` },
+        { type: "mrkdwn", text: `*Sources:* ${sourceModeLabel(report)}` }
       ]
     },
     { type: "divider" },
@@ -236,6 +237,13 @@ export function buildTimelineBlocks(report: InvestigationResult): SlackBlock[] {
 
 function confidenceBadge(confidence: InvestigationResult["confidence"]): string {
   return confidence === "high" ? "🟢 High" : confidence === "medium" ? "🟡 Medium" : "🔴 Low";
+}
+
+function sourceModeLabel(report: InvestigationResult): string {
+  const mode = report.sourceMode ?? "demo";
+  const connectorCount = report.connectors?.length
+    ?? (report.evidence.length > 0 ? new Set(report.evidence.map((item) => item.source)).size : 0);
+  return `${mode}${connectorCount ? ` · ${connectorCount} source${connectorCount === 1 ? "" : "s"}` : ""}`;
 }
 
 function button(
