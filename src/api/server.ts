@@ -2,12 +2,14 @@ import express from "express";
 import { z } from "zod";
 import type { InvestigationPipeline } from "../investigation/pipeline.js";
 import { demoQuestions } from "../data/demoData.js";
+import { registerGitHubOAuthRoutes } from "../auth/githubOAuth.js";
 
 const requestSchema = z.object({ question: z.string().trim().min(3).max(500) });
 
 export function createApi(pipeline: InvestigationPipeline) {
   const app = express();
   app.use(express.json({ limit: "32kb" }));
+  registerGitHubOAuthRoutes(app);
 
   app.get("/health", (_request, response) => {
     response.json({ status: "ok", service: "slack-detective" });

@@ -2,6 +2,8 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 
 export interface McpTool {
   name: string;
+  description?: string;
+  inputSchema?: Record<string, unknown>;
 }
 
 export interface McpToolClient {
@@ -31,19 +33,33 @@ export class StdioMcpClient implements McpToolClient {
 
   constructor(
     private readonly command: string,
-    private readonly requestTimeoutMs = 20_000
+    private readonly requestTimeoutMs = 20_000,
+    /**
+     * Extra env vars merged over process.env for this server's own child process only.
+     * Lets two per-user MCP clients (e.g. two users' own Sheets credentials) run as separate
+     * processes with isolated env instead of colliding in the shared process.env.
+     */
+    private readonly extraEnv: Record<string, string> = {}
   ) {}
 
   async listTools(): Promise<McpTool[]> {
     await this.ensureInitialized();
     const result = await this.request("tools/list", {});
     const tools = asRecord(result).tools;
-    return Array.isArray(tools)
-      ? tools
-        .map((tool) => asRecord(tool).name)
-        .filter((name): name is string => typeof name === "string")
-        .map((name) => ({ name }))
-      : [];
+    if (!Array.isArray(tools)) return [];
+
+    return tools
+      .map((tool): McpTool | null => {
+        const record = asRecord(tool);
+        if (typeof record.name !== "string") return null;
+        const inputSchema = asRecord(record.inputSchema ?? record.input_schema);
+        return {
+          name: record.name,
+          description: typeof record.description === "string" ? record.description : undefined,
+          inputSchema: Object.keys(inputSchema).length > 0 ? inputSchema : undefined
+        };
+      })
+      .filter((tool): tool is McpTool => tool !== null);
   }
 
   async callTool(name: string, args: Record<string, unknown>): Promise<unknown> {
@@ -68,7 +84,7 @@ export class StdioMcpClient implements McpToolClient {
     this.child = spawn(this.command, {
       shell: true,
       stdio: ["pipe", "pipe", "pipe"],
-      env: process.env
+      env: { ...process.env, ...this.extraEnv }
     });
 
     this.child.stdout.on("data", (chunk: Buffer) => this.readStdout(chunk));
@@ -114,33 +130,25 @@ export class StdioMcpClient implements McpToolClient {
 
   private writeMessage(payload: unknown): void {
     if (!this.child) throw new Error("MCP server is not running.");
-    const body = Buffer.from(JSON.stringify(payload), "utf8");
-    const headers = Buffer.from(`Content-Length: ${body.length}\r\n\r\n`, "ascii");
-    this.child.stdin.write(Buffer.concat([headers, body]));
+    this.child.stdin.write(`${JSON.stringify(payload)}\n`);
   }
 
   private readStdout(chunk: Buffer): void {
     this.buffer = Buffer.concat([this.buffer, chunk]);
 
     while (true) {
-      const headerEnd = this.buffer.indexOf("\r\n\r\n");
-      if (headerEnd < 0) return;
+      const newlineIndex = this.buffer.indexOf("\n");
+      if (newlineIndex < 0) return;
 
-      const header = this.buffer.subarray(0, headerEnd).toString("ascii");
-      const match = /Content-Length:\s*(\d+)/i.exec(header);
-      if (!match?.[1]) {
-        this.buffer = this.buffer.subarray(headerEnd + 4);
-        continue;
+      const line = this.buffer.subarray(0, newlineIndex).toString("utf8").replace(/\r$/, "");
+      this.buffer = this.buffer.subarray(newlineIndex + 1);
+      if (!line.trim()) continue;
+
+      try {
+        this.handleMessage(JSON.parse(line) as JsonRpcResponse);
+      } catch {
+        // MCP servers may emit non-JSON noise on stdout; ignore lines that aren't valid messages.
       }
-
-      const length = Number(match[1]);
-      const bodyStart = headerEnd + 4;
-      const bodyEnd = bodyStart + length;
-      if (this.buffer.length < bodyEnd) return;
-
-      const body = this.buffer.subarray(bodyStart, bodyEnd).toString("utf8");
-      this.buffer = this.buffer.subarray(bodyEnd);
-      this.handleMessage(JSON.parse(body) as JsonRpcResponse);
     }
   }
 

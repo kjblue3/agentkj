@@ -38,7 +38,8 @@ export class SlackConnector implements EvidenceConnector {
 
   constructor(
     private readonly token: string,
-    private readonly fetcher: FetchLike = fetch
+    private readonly fetcher: FetchLike = fetch,
+    private readonly searchToken: string = token
   ) {}
 
   async search(query: InvestigationQuery): Promise<EvidenceItem[]> {
@@ -51,7 +52,7 @@ export class SlackConnector implements EvidenceConnector {
     const payload = await fetchJson<SlackSearchResponse>(
       this.fetcher,
       `https://slack.com/api/search.messages?${params.toString()}`,
-      { headers: this.headers() },
+      { headers: { Authorization: `Bearer ${this.searchToken}` } },
       this.name
     );
     if (!payload?.ok) return [];

@@ -46,7 +46,7 @@ function createRealConnectors(env: NodeJS.ProcessEnv): EvidenceConnector[] {
   const connectors: EvidenceConnector[] = [];
 
   if (env.SLACK_BOT_TOKEN) {
-    connectors.push(new SlackConnector(env.SLACK_BOT_TOKEN));
+    connectors.push(new SlackConnector(env.SLACK_BOT_TOKEN, undefined, env.SLACK_USER_TOKEN));
   } else {
     warnMissingConnector("Slack", ["SLACK_BOT_TOKEN"]);
   }
