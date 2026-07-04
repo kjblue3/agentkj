@@ -4,19 +4,22 @@ import { createApi } from "./api/server.js";
 import { createConnectors, effectiveConnectorMode } from "./connectors/index.js";
 import { loadEvidence } from "./data/store.js";
 import { InvestigationPipeline } from "./investigation/pipeline.js";
+import { loadGlobalServerSpecs, McpToolRegistry } from "./mcp/registry.js";
 import { ReportSynthesizer } from "./openai/synthesizer.js";
 import { createSlackApp } from "./slack/app.js";
 
 export async function createApplication() {
   const evidence = await loadEvidence();
   const connectors = createConnectors(evidence);
+  const globalMcpRegistry = new McpToolRegistry(loadGlobalServerSpecs());
   const pipeline = new InvestigationPipeline(
     connectors,
     new ReportSynthesizer(),
     {
       sourceMode: effectiveConnectorMode(connectors),
       connectors: connectors.map((connector) => connector.name)
-    }
+    },
+    globalMcpRegistry
   );
   return {
     api: createApi(pipeline),
