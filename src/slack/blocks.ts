@@ -109,13 +109,15 @@ export function selectDisplayEvidence(report: InvestigationResult): Investigatio
   return selected.length > 0 ? selected : report.evidence.slice(0, evidencePreviewLimit);
 }
 
-function selectDisplayTimeline(report: InvestigationResult): InvestigationResult["timeline"] {
+export function selectDisplayTimeline(report: InvestigationResult): InvestigationResult["timeline"] {
   const displayEvidenceIds = new Set(selectDisplayEvidence(report).map((item) => item.id));
   const selected = report.timeline.filter((event) =>
     event.evidenceIds.some((id) => displayEvidenceIds.has(id))
   );
 
-  return selected.length > 0 ? selected : report.timeline;
+  return (selected.length > 0 ? selected : report.timeline)
+    .slice()
+    .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
 }
 
 export function buildReportBlocks(report: InvestigationResult, reportId: string): SlackBlock[] {

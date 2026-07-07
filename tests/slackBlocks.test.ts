@@ -8,7 +8,8 @@ import {
   buildEvidenceBlocks,
   buildReportBlocks,
   buildTimelineBlocks,
-  selectDisplayEvidence
+  selectDisplayEvidence,
+  selectDisplayTimeline
 } from "../src/slack/blocks.js";
 import type { InvestigationResult } from "../src/types/schemas.js";
 
@@ -95,5 +96,60 @@ describe("Slack Block Kit rendering", () => {
 
     expect(timelineText).toMatch(/checkout|tax_rule|PR #1842/i);
     expect(timelineText).not.toMatch(/redis|coffee machine/i);
+  });
+
+  it("keeps displayed timeline events chronological", () => {
+    const report: InvestigationResult = {
+      question: "Why is casual timeline off?",
+      shortAnswer: "A recent change reordered events.",
+      confidence: "medium",
+      likelyRootCause: "The display timeline was not sorted after filtering.",
+      evidence: [
+        {
+          id: "github:commit:one",
+          source: "github",
+          title: "Commit one",
+          body: "casual timeline sort change",
+          url: "https://example.com/one",
+          timestamp: "2026-07-07T12:00:00.000Z",
+          entities: ["casual-timeline"],
+          tags: ["github"],
+          confidence: 0.8
+        }
+      ],
+      timeline: [
+        {
+          timestamp: "2026-07-07T12:00:00.000Z",
+          title: "Second event",
+          summary: "Later event",
+          evidenceIds: ["github:commit:one"]
+        },
+        {
+          timestamp: "2026-07-07T11:00:00.000Z",
+          title: "First event",
+          summary: "Earlier event",
+          evidenceIds: ["github:commit:one"]
+        }
+      ],
+      openQuestions: [],
+      recommendedActions: []
+    };
+
+    expect(selectDisplayTimeline(report).map((event) => event.title)).toEqual([
+      "First event",
+      "Second event"
+    ]);
+  });
+
+  it("keeps the follow-up button wired to the report id", async () => {
+    const report = await pipeline.investigate("Why did checkout latency spike?");
+    const actions = buildReportBlocks(report, "report-123").find((block) => block.type === "actions") as {
+      elements: Array<{ action_id?: string; value?: string }>;
+    };
+
+    expect(actions.elements).toContainEqual(expect.objectContaining({
+      action_id: "create_followup",
+      value: "report-123"
+    }));
   });
 });
