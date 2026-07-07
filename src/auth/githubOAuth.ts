@@ -3,10 +3,15 @@ import { GitHubRest } from "../github/githubRest.js";
 import { setGitHubToken } from "./tokenStore.js";
 
 /**
- * "Connect your GitHub" OAuth flow. Independent of Slack's Socket Mode connection — GitHub's
- * OAuth redirect needs a real public callback URL regardless of how Slack itself is wired, so
- * in local dev this route must be tunneled (e.g. `ngrok http $PORT`) and PUBLIC_BASE_URL set to
- * that tunnel URL, with the same URL registered as the GitHub OAuth App's callback.
+ * "Connect your GitHub" flow, backed by a GitHub App (not a classic OAuth App) so each user
+ * picks — during installation, at github.com/settings/installations afterward — either all
+ * repos or an individual allow-list, and can revoke/change it any time without touching this
+ * app. Requires the App's "Request user authorization (OAuth) during installation" setting
+ * enabled; the authorize/token endpoints are otherwise identical to a classic OAuth App's.
+ * Independent of Slack's Socket Mode connection — GitHub's redirect needs a real public
+ * callback URL regardless of how Slack itself is wired, so in local dev this route must be
+ * tunneled and PUBLIC_BASE_URL set to that tunnel URL, with the same URL registered as the
+ * GitHub App's callback.
  *
  * `state` carries the initiating Slack user id through the redirect round-trip so the callback
  * knows whose token this is — GitHub echoes `state` back unmodified, and it also functions as a
@@ -16,12 +21,12 @@ import { setGitHubToken } from "./tokenStore.js";
 export function registerGitHubOAuthRoutes(app: Express, env: NodeJS.ProcessEnv = process.env): void {
   const clientId = env.GITHUB_OAUTH_CLIENT_ID;
   const clientSecret = env.GITHUB_OAUTH_CLIENT_SECRET;
+  const appSlug = env.GITHUB_APP_SLUG;
   const baseUrl = env.PUBLIC_BASE_URL?.replace(/\/$/, "");
-  const scopes = env.GITHUB_OAUTH_SCOPES ?? "repo";
 
-  if (!clientId || !clientSecret || !baseUrl) {
+  if (!clientId || !clientSecret || !baseUrl || !appSlug) {
     console.warn(
-      "GitHub OAuth disabled; missing GITHUB_OAUTH_CLIENT_ID, GITHUB_OAUTH_CLIENT_SECRET, or PUBLIC_BASE_URL."
+      "GitHub OAuth disabled; missing GITHUB_OAUTH_CLIENT_ID, GITHUB_OAUTH_CLIENT_SECRET, GITHUB_APP_SLUG, or PUBLIC_BASE_URL."
     );
     return;
   }
@@ -34,19 +39,45 @@ export function registerGitHubOAuthRoutes(app: Express, env: NodeJS.ProcessEnv =
       response.status(400).send("Missing state (Slack user id).");
       return;
     }
-    const authorizeUrl = new URL("https://github.com/login/oauth/authorize");
-    authorizeUrl.searchParams.set("client_id", clientId);
-    authorizeUrl.searchParams.set("redirect_uri", redirectUri);
-    authorizeUrl.searchParams.set("scope", scopes);
-    authorizeUrl.searchParams.set("state", slackUserId);
-    response.redirect(authorizeUrl.toString());
+    // The plain /login/oauth/authorize endpoint only verifies identity for a GitHub App — it never
+    // installs the app, so the resulting token can't see ANY repos (every API call 404s). The
+    // /installations/new flow runs the repo picker (all repos or a hand-picked list) and, because
+    // the App has "Request user authorization (OAuth) during installation" enabled, GitHub then
+    // redirects to our callback with the usual code+state — so the token exchange below is unchanged.
+    const installUrl = new URL(`https://github.com/apps/${appSlug}/installations/new`);
+    installUrl.searchParams.set("state", slackUserId);
+    response.redirect(installUrl.toString());
   });
 
   app.get("/auth/github/callback", async (request, response) => {
     const code = typeof request.query.code === "string" ? request.query.code : "";
     const slackUserId = typeof request.query.state === "string" ? request.query.state : "";
-    if (!code || !slackUserId) {
-      response.status(400).send("Missing code or state.");
+    const setupAction = typeof request.query.setup_action === "string" ? request.query.setup_action : "";
+
+    if (!code) {
+      // Reconfiguring an EXISTING installation (setup_action=update, or re-running the install
+      // flow when already installed) redirects here without a code. Identity auth is instant
+      // once installed, so bounce through the plain authorize endpoint to mint a fresh token
+      // rather than dead-ending with an error.
+      if (slackUserId) {
+        const authorizeUrl = new URL("https://github.com/login/oauth/authorize");
+        authorizeUrl.searchParams.set("client_id", clientId);
+        authorizeUrl.searchParams.set("redirect_uri", redirectUri);
+        authorizeUrl.searchParams.set("state", slackUserId);
+        response.redirect(authorizeUrl.toString());
+        return;
+      }
+      response
+        .status(400)
+        .send(
+          setupAction
+            ? "Installation updated, but this window lost track of your Slack user. Run `/detective connect github` in Slack to finish connecting."
+            : "Missing code or state."
+        );
+      return;
+    }
+    if (!slackUserId) {
+      response.status(400).send("Missing state (Slack user id). Run `/detective connect github` in Slack to get a fresh link.");
       return;
     }
 
@@ -56,7 +87,12 @@ export function registerGitHubOAuthRoutes(app: Express, env: NodeJS.ProcessEnv =
         headers: { "Content-Type": "application/json", Accept: "application/json" },
         body: JSON.stringify({ client_id: clientId, client_secret: clientSecret, code, redirect_uri: redirectUri })
       });
-      const tokenPayload = (await tokenResponse.json()) as { access_token?: string; error_description?: string };
+      const tokenPayload = (await tokenResponse.json()) as {
+        access_token?: string;
+        refresh_token?: string;
+        expires_in?: number;
+        error_description?: string;
+      };
       if (!tokenPayload.access_token) {
         console.warn("GitHub OAuth token exchange failed.", tokenPayload.error_description);
         response.status(502).send("GitHub did not return an access token. Please try connecting again.");
@@ -73,7 +109,11 @@ export function registerGitHubOAuthRoutes(app: Express, env: NodeJS.ProcessEnv =
       setGitHubToken(slackUserId, {
         token: tokenPayload.access_token,
         login: user.login,
-        connectedAt: new Date().toISOString()
+        connectedAt: new Date().toISOString(),
+        refreshToken: tokenPayload.refresh_token,
+        expiresAt: tokenPayload.expires_in
+          ? new Date(Date.now() + tokenPayload.expires_in * 1000).toISOString()
+          : undefined
       });
 
       response.send(htmlConfirmation(user.login));
@@ -90,6 +130,7 @@ function htmlConfirmation(login: string): string {
 <body style="font-family: system-ui, sans-serif; padding: 2rem; text-align: center;">
   <h1>✅ Connected as ${escapeHtml(login)}</h1>
   <p>You can close this tab and go back to Slack — try <code>/detective</code> again.</p>
+  <p>Change or revoke which repos this can see any time at <a href="https://github.com/settings/installations">github.com/settings/installations</a>.</p>
 </body></html>`;
 }
 

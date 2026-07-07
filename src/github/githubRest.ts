@@ -32,6 +32,22 @@ interface RawSearchResponse<T> {
   items?: T[];
 }
 
+interface RawRepoSummary {
+  name: string;
+  full_name: string;
+  owner?: { login?: string };
+  private?: boolean;
+  pushed_at?: string;
+}
+
+export interface GitHubRepoSummary {
+  name: string;
+  fullName: string;
+  owner: string;
+  private: boolean;
+  pushedAt?: string;
+}
+
 export interface GitHubCommitSummary {
   sha: string;
   message: string;
@@ -141,6 +157,29 @@ export class GitHubRest {
       { headers: this.headers() },
       this.name
     );
+  }
+
+  /**
+   * Repos this token can see, most-recently-pushed first. Lets the agent resolve a bare repo
+   * name mentioned in a question (e.g. "NowWhat") to an exact owner/repo pair without guessing —
+   * `list_recent_commits`/`get_commit`/`read_file` all require an exact owner, which a plain
+   * per-user token has no other way to learn.
+   */
+  async listRepos(): Promise<GitHubRepoSummary[]> {
+    const query = new URLSearchParams({ per_page: "100", sort: "pushed", affiliation: "owner,collaborator,organization_member" });
+    const payload = await fetchJson<RawRepoSummary[]>(
+      this.fetcher,
+      `https://api.github.com/user/repos?${query.toString()}`,
+      { headers: this.headers() },
+      this.name
+    );
+    return (payload ?? []).map((repo) => ({
+      name: repo.name,
+      fullName: repo.full_name,
+      owner: repo.owner?.login ?? "",
+      private: Boolean(repo.private),
+      pushedAt: repo.pushed_at
+    }));
   }
 
   private toCommitSummary(commit: RawCommitSummary): GitHubCommitSummary {
