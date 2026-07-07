@@ -1,5 +1,5 @@
 import { App } from "@slack/bolt";
-import { getGitHubToken, listUserConnectors, setUserConnector } from "../auth/tokenStore.js";
+import { getValidGitHubToken, listUserConnectors, setUserConnector } from "../auth/tokenStore.js";
 import type { InvestigationPipeline } from "../investigation/pipeline.js";
 import { describeCatalog, findCatalogEntry } from "../mcp/catalog.js";
 import { McpToolRegistry, type McpServerSpec } from "../mcp/registry.js";
@@ -238,7 +238,7 @@ export function createSlackApp(pipeline: InvestigationPipeline): App | null {
       return;
     }
 
-    const githubToken = getGitHubToken(userId);
+    const githubToken = await getValidGitHubToken(userId);
     if (!githubToken) {
       await respond({ response_type: "ephemeral", text: connectGitHubText(userId) });
       return;
@@ -274,7 +274,7 @@ export function createSlackApp(pipeline: InvestigationPipeline): App | null {
     // connected their own GitHub yet (pipeline.ts does the same opts.githubToken ?? GITHUB_TOKEN
     // fallback) rather than hard-blocking, so app_mention still works out of the box in demo mode.
     const userId = "user" in event && typeof event.user === "string" ? event.user : undefined;
-    const githubToken = userId ? getGitHubToken(userId) : undefined;
+    const githubToken = userId ? await getValidGitHubToken(userId) : undefined;
     const { owner, repo, question } = parseOwnerRepo(stripMention(event.text));
     const threadTs = event.thread_ts ?? event.ts;
     try {

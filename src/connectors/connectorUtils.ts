@@ -98,7 +98,12 @@ export async function fetchJson<T>(
   try {
     const response = await fetcher(url, init);
     if (!response.ok) {
-      console.warn(`${connectorName} request failed: ${response.status} ${response.statusText}`);
+      // The body is the only place GitHub etc. say WHY (e.g. 422 "must include at least one
+      // user/org/repo", 404 "no installation access") — without it these are undiagnosable.
+      const body = await response.text().catch(() => "");
+      console.warn(
+        `${connectorName} request failed: ${response.status} ${response.statusText} — ${url.split("?")[0]} — ${truncate(body.replace(/\s+/g, " "), 300)}`
+      );
       return null;
     }
     return (await response.json()) as T;
