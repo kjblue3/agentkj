@@ -1,3 +1,4 @@
+import { createHmac, timingSafeEqual } from "node:crypto";
 import type { Express } from "express";
 import { GitHubRest } from "../github/githubRest.js";
 import { setGitHubToken } from "./tokenStore.js";
@@ -14,9 +15,36 @@ import { setGitHubToken } from "./tokenStore.js";
  * GitHub App's callback.
  *
  * `state` carries the initiating Slack user id through the redirect round-trip so the callback
- * knows whose token this is — GitHub echoes `state` back unmodified, and it also functions as a
- * (light) CSRF guard against callbacks that weren't initiated by this app.
+ * knows whose token this is — GitHub echoes `state` back unmodified. It is HMAC-signed with an
+ * expiry (signOAuthState/verifyOAuthState below): a bare user id in `state` would let anyone who
+ * knows a victim's Slack id (visible to every workspace member) complete the flow with their OWN
+ * GitHub account bound to the victim's Slack identity, silently poisoning the victim's
+ * investigations with the attacker's repos.
  */
+
+const STATE_TTL_MS = 30 * 60_000;
+
+/** HMAC key: the OAuth client secret is required for this flow anyway and never leaves the server. */
+export function signOAuthState(slackUserId: string, env: NodeJS.ProcessEnv = process.env): string {
+  const secret = env.GITHUB_OAUTH_CLIENT_SECRET;
+  if (!secret) return slackUserId; // Without the secret the OAuth routes are disabled; nothing consumes this.
+  const payload = `${slackUserId}.${Date.now() + STATE_TTL_MS}`;
+  const signature = createHmac("sha256", secret).update(payload).digest("base64url");
+  return `${payload}.${signature}`;
+}
+
+/** Returns the Slack user id if the state is authentic and unexpired, else null. */
+export function verifyOAuthState(state: string, env: NodeJS.ProcessEnv = process.env): string | null {
+  const secret = env.GITHUB_OAUTH_CLIENT_SECRET;
+  const [slackUserId, expires, signature] = state.split(".");
+  if (!secret || !slackUserId || !expires || !signature) return null;
+  const expected = createHmac("sha256", secret).update(`${slackUserId}.${expires}`).digest("base64url");
+  const given = Buffer.from(signature);
+  const wanted = Buffer.from(expected);
+  if (given.length !== wanted.length || !timingSafeEqual(given, wanted)) return null;
+  if (!/^\d+$/.test(expires) || Number(expires) < Date.now()) return null;
+  return slackUserId;
+}
 
 export function registerGitHubOAuthRoutes(app: Express, env: NodeJS.ProcessEnv = process.env): void {
   const clientId = env.GITHUB_OAUTH_CLIENT_ID;
@@ -34,9 +62,9 @@ export function registerGitHubOAuthRoutes(app: Express, env: NodeJS.ProcessEnv =
   const redirectUri = `${baseUrl}/auth/github/callback`;
 
   app.get("/auth/github", (request, response) => {
-    const slackUserId = typeof request.query.state === "string" ? request.query.state : "";
-    if (!slackUserId) {
-      response.status(400).send("Missing state (Slack user id).");
+    const state = typeof request.query.state === "string" ? request.query.state : "";
+    if (!state || !verifyOAuthState(state, env)) {
+      response.status(400).send("This connect link is invalid or has expired. Run `/detective connect github` in Slack to get a fresh one.");
       return;
     }
     // The plain /login/oauth/authorize endpoint only verifies identity for a GitHub App — it never
@@ -45,14 +73,15 @@ export function registerGitHubOAuthRoutes(app: Express, env: NodeJS.ProcessEnv =
     // the App has "Request user authorization (OAuth) during installation" enabled, GitHub then
     // redirects to our callback with the usual code+state — so the token exchange below is unchanged.
     const installUrl = new URL(`https://github.com/apps/${appSlug}/installations/new`);
-    installUrl.searchParams.set("state", slackUserId);
+    installUrl.searchParams.set("state", state);
     response.redirect(installUrl.toString());
   });
 
   app.get("/auth/github/callback", async (request, response) => {
     const code = typeof request.query.code === "string" ? request.query.code : "";
-    const slackUserId = typeof request.query.state === "string" ? request.query.state : "";
+    const state = typeof request.query.state === "string" ? request.query.state : "";
     const setupAction = typeof request.query.setup_action === "string" ? request.query.setup_action : "";
+    const slackUserId = state ? verifyOAuthState(state, env) : null;
 
     if (!code) {
       // Reconfiguring an EXISTING installation (setup_action=update, or re-running the install
@@ -63,7 +92,7 @@ export function registerGitHubOAuthRoutes(app: Express, env: NodeJS.ProcessEnv =
         const authorizeUrl = new URL("https://github.com/login/oauth/authorize");
         authorizeUrl.searchParams.set("client_id", clientId);
         authorizeUrl.searchParams.set("redirect_uri", redirectUri);
-        authorizeUrl.searchParams.set("state", slackUserId);
+        authorizeUrl.searchParams.set("state", state);
         response.redirect(authorizeUrl.toString());
         return;
       }
@@ -72,12 +101,12 @@ export function registerGitHubOAuthRoutes(app: Express, env: NodeJS.ProcessEnv =
         .send(
           setupAction
             ? "Installation updated, but this window lost track of your Slack user. Run `/detective connect github` in Slack to finish connecting."
-            : "Missing code or state."
+            : "Missing code, or the connect link expired. Run `/detective connect github` in Slack to get a fresh one."
         );
       return;
     }
     if (!slackUserId) {
-      response.status(400).send("Missing state (Slack user id). Run `/detective connect github` in Slack to get a fresh link.");
+      response.status(400).send("This connect link is invalid or has expired. Run `/detective connect github` in Slack to get a fresh one.");
       return;
     }
 
