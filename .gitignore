@@ -13,3 +13,4 @@ coverage/
 __pycache__/
 *.egg-info/
 data/userTokens.local.json
+data/remoteConnections.local.json

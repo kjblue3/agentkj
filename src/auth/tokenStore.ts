@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
@@ -124,8 +125,8 @@ export async function getValidGitHubToken(
  * Part 3 (self-service MCP connectors): per-user set of connected catalog entries, e.g.
  * `{ "sheets": { ...credentials } }`. Kept alongside GitHub tokens so both live in one place
  * pending a real per-user datastore. See src/mcp/registry.ts for how these are consumed.
- * (Deliberately NOT persisted to disk: these are third-party credentials pasted into Slack,
- * and in-memory was the documented contract when they were entered.)
+ * (Deliberately NOT persisted to disk: these are third-party setup values collected through a
+ * backend form, and in-memory is the hackathon contract.)
  */
 export interface UserConnector {
   catalogId: string;
@@ -135,6 +136,7 @@ export interface UserConnector {
 }
 
 const userConnectors = new Map<string, Map<string, UserConnector>>();
+const userConnectorCredentialIntents = new Map<string, { slackUserId: string; catalogId: string; expiresAt: number }>();
 
 export function setUserConnector(slackUserId: string, connector: UserConnector): void {
   const existing = userConnectors.get(slackUserId) ?? new Map<string, UserConnector>();
@@ -148,4 +150,33 @@ export function listUserConnectors(slackUserId: string): UserConnector[] {
 
 export function removeUserConnector(slackUserId: string, catalogId: string): void {
   userConnectors.get(slackUserId)?.delete(catalogId);
+}
+
+export function createUserConnectorCredentialIntent(slackUserId: string, catalogId: string): string {
+  const secret = randomBytes(24).toString("base64url");
+  userConnectorCredentialIntents.set(secret, {
+    slackUserId,
+    catalogId,
+    expiresAt: Date.now() + 15 * 60_000
+  });
+  return secret;
+}
+
+export function getUserConnectorCredentialIntent(
+  secret: string
+): { slackUserId: string; catalogId: string } | undefined {
+  const intent = userConnectorCredentialIntents.get(secret);
+  if (!intent || intent.expiresAt < Date.now()) {
+    userConnectorCredentialIntents.delete(secret);
+    return undefined;
+  }
+  return { slackUserId: intent.slackUserId, catalogId: intent.catalogId };
+}
+
+export function consumeUserConnectorCredentialIntent(
+  secret: string
+): { slackUserId: string; catalogId: string } | undefined {
+  const intent = getUserConnectorCredentialIntent(secret);
+  if (intent) userConnectorCredentialIntents.delete(secret);
+  return intent;
 }

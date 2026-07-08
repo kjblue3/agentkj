@@ -4,7 +4,7 @@
 
 Slack Detective investigates workplace questions whose answers are split across chat, code, tickets, docs, and incident reports. Ask `/detective Why did checkout latency spike?` and it searches every source, ranks the clues, reconstructs the causal timeline, and returns a concise Slack-native report with citations and actions.
 
-Local search and synthesis work without paid services. Production-style Slack, GitHub through MCP, Jira, Google Drive, and incident connectors can be enabled with environment variables while preserving the deterministic demo fallback.
+Local search and synthesis work without paid services. Production-style Slack, GitHub through MCP, Jira, Google Drive, incident connectors, public-link reading, and experimental remote MCP connections can be enabled while preserving the deterministic demo fallback.
 
 ## What the demo includes
 
@@ -12,6 +12,8 @@ Local search and synthesis work without paid services. Production-style Slack, G
 - Block Kit “Detective Report” with evidence, timeline, confidence, and next moves
 - Interactive **Show evidence**, **Show timeline**, **Create follow-up**, and **Mark solved** actions
 - Replaceable real connectors for Slack, GitHub MCP, GitHub REST fallback, Jira, Google Docs/Drive, and incident reports
+- Public URL reading without creating a permanent connector
+- User-supplied remote MCP URL inspection, explicit approval, secure credential entry, and personal/shared/delegated use
 - Keyword, entity, tag, recency, confidence, and source-authority ranking
 - Optional OpenAI report polishing with deterministic fallback
 - Express API and a realistic 18-record ecommerce dataset
@@ -56,7 +58,8 @@ The JSON response includes `sourceMode` and `connectors`, so judges can see whet
 4. Set `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, and `SLACK_SIGNING_SECRET`.
 5. Run `npm run dev`, then use `/detective` or mention the bot.
 
-Socket Mode means the demo does not need a public tunnel.
+Socket Mode means the Slack websocket itself does not need a public tunnel. Set `PUBLIC_BASE_URL`
+only when using GitHub OAuth or the backend connector credential/setup forms.
 
 ## Optional OpenAI setup
 
@@ -82,6 +85,17 @@ Real connectors are configured through `.env` and skipped gracefully when creden
 See [CONNECTORS.md](./CONNECTORS.md) for credential creation, required scopes, verification steps, and common fixes.
 
 For hackathon judging, `CONNECTOR_MODE=demo` is the safest default: it proves the full Slack workflow without relying on external accounts. The recommended live demo is `CONNECTOR_MODE=hybrid` with seeded Slack messages and a real `slack-detective-demo` GitHub sandbox repository queried through MCP.
+
+## Dynamic connector demo
+
+In Slack, users can:
+
+- Paste a public `https://...` link in a question. The agent validates the URL, fetches bounded HTML/text, strips markup, treats the page as untrusted evidence, and does not save a connector.
+- Run `@agentkj connect https://remote-mcp.example/mcp`. The app validates the URL against localhost/private/cloud-metadata SSRF targets, inspects advertised MCP tools, shows the connector name/URL/tools/scopes, and enables it only after `@agentkj approve ...`.
+- Add `bearer` to approval when the remote service needs a token. The token is entered through `${PUBLIC_BASE_URL}/auth/connectors/...`, never pasted into Slack.
+- Share approved connections with selected users or channels using `@agentkj share <connection-id> user <U...>` or `channel <C...>`. Every tool call rechecks user, channel, allowed tool, provider scope, read-only/read-write mode, and active approval.
+
+Remote connector metadata is stored in `data/remoteConnections.local.json`; bearer credentials are in-memory only for the hackathon prototype.
 
 ## Real sandbox demo
 
@@ -140,6 +154,8 @@ npm run check      # build and test
 src/
   api/             Express endpoints
   connectors/      Replaceable evidence adapters
+  mcp/             Admin/catalog MCP registries and dynamic remote connection state
+  security/        Public URL validation and secret redaction
   data/            Dataset, loader, and seed command
   investigation/   Parse, rank, cluster, timeline, fallback
   openai/          Optional synthesis

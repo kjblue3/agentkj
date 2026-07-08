@@ -1,7 +1,7 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { cacheReport } from "../src/slack/reportCache.js";
 import type { InvestigationResult } from "../src/types/schemas.js";
-import { setUserConnector } from "../src/auth/tokenStore.js";
+import { createUserConnectorCredentialIntent, setUserConnector } from "../src/auth/tokenStore.js";
 import {
   FOLLOWUP_FALLBACK_MESSAGE,
   handleCreateFollowupAction,
@@ -18,6 +18,7 @@ vi.mock("../src/auth/tokenStore.js", async () => {
         : undefined
     ),
     listUserConnectors: vi.fn((slackUserId: string) => [...(userConnectors.get(slackUserId)?.values() ?? [])]),
+    createUserConnectorCredentialIntent: vi.fn(() => "catalog-secret"),
     setUserConnector: vi.fn((slackUserId: string, connector: unknown) => {
       const existing = userConnectors.get(slackUserId) ?? new Map<string, unknown>();
       const catalogId = (connector as { catalogId: string }).catalogId;
@@ -25,6 +26,10 @@ vi.mock("../src/auth/tokenStore.js", async () => {
       userConnectors.set(slackUserId, existing);
     })
   };
+});
+
+beforeEach(() => {
+  vi.clearAllMocks();
 });
 
 function createArgs(overrides: {
@@ -222,7 +227,7 @@ describe("handleSlackIntent", () => {
     }));
   });
 
-  it("lets app mentions connect a catalog connector", async () => {
+  it("does not collect catalog connector credentials in Slack", async () => {
     const reply = vi.fn().mockResolvedValue(undefined);
 
     await handleSlackIntent({
@@ -235,12 +240,30 @@ describe("handleSlackIntent", () => {
       source: "mention"
     });
 
-    expect(setUserConnector).toHaveBeenCalledWith("U123", expect.objectContaining({
-      catalogId: "filesystem",
-      credentials: { MCP_FS_ROOT: "C:\\Users\\kjblu\\Projects" }
-    }));
+    expect(setUserConnector).not.toHaveBeenCalled();
     expect(reply).toHaveBeenCalledWith(expect.objectContaining({
-      text: expect.stringContaining("Connected")
+      text: expect.stringContaining("I won't collect connector credentials in Slack")
+    }));
+  });
+
+  it("opens a secure setup link for catalog connectors", async () => {
+    process.env.PUBLIC_BASE_URL = "https://agentkj.example";
+    const reply = vi.fn().mockResolvedValue(undefined);
+
+    await handleSlackIntent({
+      text: "connect filesystem",
+      userId: "U123",
+      channelId: "C123",
+      pipeline: { investigate: vi.fn() } as never,
+      reply,
+      postReport: vi.fn(),
+      source: "mention"
+    });
+
+    expect(createUserConnectorCredentialIntent).toHaveBeenCalledWith("U123", "filesystem");
+    expect(reply).toHaveBeenCalledWith(expect.objectContaining({
+      response_type: "ephemeral",
+      text: expect.stringContaining("/auth/catalog-connectors/catalog-secret")
     }));
   });
 

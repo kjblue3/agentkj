@@ -12,8 +12,8 @@ confidence, citations, timeline) by pulling from GitHub, Slack, and other connec
 
 Stack: Node + TypeScript (ESM, `"type": "module"`), Express, `@slack/bolt` in **Socket Mode** (no
 public URL needed for Slack itself), `openai` npm SDK (pointed at either OpenAI or Groq), Zod for
-schema validation, Vitest for tests. No database — everything is in-memory (see "Known
-tradeoffs" below).
+schema validation, Vitest for tests. No production database — hackathon state is split between
+in-memory maps and gitignored local JSON files (see "Known tradeoffs" below).
 
 ## Architecture
 
@@ -26,19 +26,22 @@ entry point both `src/api/server.ts` (`POST /investigate`) and `src/slack/app.ts
 1. **Agentic path** (`src/agent/investigator.ts`, `AgentInvestigator`) — used whenever an LLM is
    configured (`AGENT_ENABLED !== "false"` and `LLM_API_KEY`/`OPENAI_API_KEY` set). This is a real
    tool-calling loop: the LLM gets tool schemas (`search_code`, `search_issues`,
-   `list_recent_commits`, `get_commit`, `read_file`, `search_slack`, plus any MCP-registry tools),
-   calls them (in parallel, up to `MAX_ITERATIONS`), reads the results, and keeps going until it
+   `list_recent_commits`, `get_commit`, `read_file`, `search_slack`, plus any MCP-registry,
+   public-web, or approved remote-connector tools), calls them (in parallel, up to
+   `MAX_ITERATIONS`), reads the results, and keeps going until it
    calls `finish` with a structured verdict. This is what lets it answer "why is my game all red"
    by reading an actual commit diff that set an RGB value — it isn't matching the word "red"
    against anything, it's inspecting recent commits because the system prompt tells it to.
-2. **Classic path** (`InvestigationPipeline.classicInvestigate`, unchanged from the original
+2. **Classic path** (`InvestigationPipeline.classicInvestigate`, mostly unchanged from the original
    hackathon build) — literal keyword search across connectors (`src/connectors/*`), ranked by
    `src/investigation/ranker.ts`, narrated by `src/openai/synthesizer.ts`'s
    `responses.create`-based `ReportSynthesizer` (falls back to deterministic
    `src/investigation/fallbackSynthesis.ts` prose if no LLM key at all). This only ever sees
    issues + current file contents — **never commit history/diffs** — which is precisely the class
    of bug the agentic path was built to fix. Kept as the no-LLM-key fallback and for
-   `AGENT_ENABLED=false`.
+   `AGENT_ENABLED=false`. If the request contains a public URL but no agent LLM is available,
+   `publicLinkInvestigate` fetches that one page and synthesizes from it without creating a
+   permanent connector.
 
 Why two paths instead of replacing the old one: the classic path needs zero configuration (no LLM
 key at all) and is what keeps `/demo/questions` and tests deterministic.
@@ -60,7 +63,8 @@ The original build pointed at one hardcoded `GITHUB_OWNER`/`GITHUB_DEMO_REPO` vi
 - `src/auth/githubOAuth.ts` registers `GET /auth/github` (redirect to GitHub's OAuth authorize
   screen, `state` = Slack user id) and `GET /auth/github/callback` (exchanges the code for a token,
   fetches the login, stores it).
-- `src/auth/tokenStore.ts` is an in-memory `Map<slackUserId, {token, login}>` (see tradeoffs below).
+- `src/auth/tokenStore.ts` keeps a per-Slack-user token map and persists GitHub tokens to a
+  gitignored local JSON file so development restarts don't disconnect everyone (see tradeoffs below).
 - `src/slack/app.ts`'s `/detective` handler looks up the caller's token; if absent, it replies with
   a connect link (`${PUBLIC_BASE_URL}/auth/github?state=<slackUserId>`) instead of investigating.
 - When a token is present, `pipeline.investigate(question, { githubToken, githubLogin, owner?,
@@ -74,38 +78,56 @@ This requires a public HTTP callback endpoint for GitHub to redirect to
 orthogonal. In dev, tunnel just that one route with `ngrok http 3000` and set `PUBLIC_BASE_URL` to
 the ngrok URL; Slack's websocket connection is unaffected.
 
-### Self-service pluggable connectors (MCP)
+### Public links and self-service pluggable connectors
 
-Goal: a user can attach a product the team never wrote a connector for (Sheets, Notion, Forms...)
-themselves, with no redeploy. This works because Model Context Protocol servers self-describe their
-own tools (`tools/list` → name, description, JSON-Schema input) — see `src/connectors/mcpClient.ts`
-(`StdioMcpClient.listTools()`).
+Goal: a user can paste a public link or attach a product the team never wrote a connector for
+(Sheets, Notion, Forms, Strava...) with no redeploy.
 
-- `src/mcp/registry.ts` (`McpToolRegistry`) spawns a list of MCP server specs, discovers their
-  tools, **namespaces** them (`serverName__toolName`) so two servers can't collide, and exposes
-  `listAgentTools()` (flat `ChatCompletionTool[]`) + `call(name, args)` dispatch. These get merged
-  straight into the agent's toolbox via `AgentContext.externalTools`/`externalCall` in
-  `src/agent/investigator.ts` — the agent loop has no idea these aren't "native" tools.
-- Two tiers of specs, both consumed by the same registry class:
-  - **Global/admin** (`loadGlobalServerSpecs`): from `MCP_SERVERS` env (JSON array) or `mcp.json` at
-    repo root. Available to every user. Only an admin can edit these.
-  - **Per-user self-service** (`src/mcp/catalog.ts` + `/detective connect`/`connectors` in
-    `src/slack/app.ts`): a user picks a **vetted catalog entry** (fixed `command`, e.g. the
-    filesystem MCP server) and supplies only credential values, never a command. Stored via
-    `setUserConnector`/`listUserConnectors` in `tokenStore.ts`, turned into an `McpToolRegistry` on
-    demand in `src/slack/app.ts` (`userMcpRegistry`).
+**Public links** are one-request tools, not durable connectors:
 
-**Why the catalog, not free-form commands**: a stdio MCP "server" is `spawn(command, {shell:true})`
-— an arbitrary local command. Letting any Slack user register an arbitrary command on a shared host
-is remote code execution. The catalog model closes that off: the `command` is always fixed and
-vetted by whoever maintains `src/mcp/catalog.ts`; the user only ever supplies credential *values*
-(`credentialFields`), which get passed as that one child process's env (`StdioMcpClient`'s
-`extraEnv` constructor param — merged as `{...process.env, ...extraEnv}` only for that spawn, so two
-users' credentials for the same connector type never collide via a shared `process.env`). Free-form
-local stdio specs would be fine for a single-user self-hosted install (Bob runs his own copy for
-himself) but must never be exposed to arbitrary users on a shared deployment. Remote HTTP/SSE MCP
-transport (a URL, no local spawn) would be the safer way to get true free-form self-service later,
-but isn't implemented — the current client is stdio-only.
+- `src/connectors/publicWebTool.ts` detects an `http(s)` URL, validates it with
+  `src/security/publicUrl.ts`, fetches at most 1 MB of HTML/text, strips scripts/styles/tags, and
+  exposes the content as untrusted evidence.
+- `src/investigation/pipeline.ts` also has a deterministic public-link fallback for no-agent mode.
+
+**MCP connectors** rely on MCP self-description (`tools/list` → name, description, JSON-Schema
+input):
+
+- `src/mcp/registry.ts` (`McpToolRegistry`) handles admin/global and vetted catalog **stdio** MCP
+  servers. It namespaces tool names (`serverName__toolName`), exposes `listAgentTools()` +
+  `call(name, args)`, and redacts configured secret values before tool results are returned to the
+  agent. `StdioMcpClient` also redacts configured env values from child-process stderr.
+- `src/mcp/catalog.ts` remains the safe local-command model: users can pick a vetted fixed command,
+  never a free-form command. Catalog setup values are collected through
+  `/auth/catalog-connectors/:secret`, not pasted into Slack.
+- `src/connectors/remoteMcpClient.ts` supports user-supplied **remote** MCP URLs over streamable
+  HTTP. `src/security/publicUrl.ts` validates every URL/redirect and blocks localhost,
+  private-network, link-local/cloud-metadata, multicast, reserved, and test-net addresses.
+- `src/mcp/connections.ts` owns remote connector state. A user runs `@agentkj connect https://...`;
+  the app validates and inspects the remote server, displays name/URL/tools/scopes as experimental
+  and untrusted, then enables it only after `@agentkj approve ...`. Optional bearer credentials are
+  entered via `/auth/connectors/:secret`, not Slack.
+
+Remote connection scopes:
+
+- **Personal**: owned by one Slack user, private by default, only delegated if the owner shares it.
+- **Shared workspace**: intended for team-owned/service-account connectors, shareable with selected
+  users, selected channels, or the workspace.
+
+Every remote tool call rechecks the internal authorization model: requester, workspace/channel,
+allowed tool name, read-only vs read-write mode, provider OAuth/API scopes advertised by the tool,
+and active+approved status. Selection order is requester personal connection first, then approved
+shared workspace connection, then explicitly delegated personal connection. The agent never silently
+uses another person's private account.
+
+Remote connector output is wrapped as experimental/untrusted data and redacted by key name
+(`token`, `secret`, `authorization`, etc.) plus exact credential value before it can reach the LLM.
+The system prompt also tells the agent not to follow instructions from webpages or connector output.
+
+**Why local stdio still uses a catalog**: a stdio MCP "server" is `spawn(command, {shell:true})` —
+an arbitrary local command. Letting Slack users register arbitrary local commands on a shared host is
+remote code execution. Free-form self-service is only allowed for remote URLs after SSRF validation,
+inspection, explicit approval, and per-call authorization.
 
 ## Key files
 
@@ -116,11 +138,18 @@ but isn't implemented — the current client is stdio-only.
 | `src/agent/investigator.ts` | `AgentInvestigator` — the tool-calling loop. |
 | `src/github/githubRest.ts` | `GitHubRest` — thin REST client, token passed in per-instance (works for both the shared demo token and per-user OAuth tokens). Includes `getCommit` (returns diffs) — the capability the old connectors lacked. |
 | `src/llm/client.ts` | `createLlmClient`/`llmModel` — provider-agnostic (Groq/OpenAI) `openai` client construction. |
-| `src/auth/tokenStore.ts` | In-memory per-Slack-user GitHub tokens + connected MCP catalog entries. |
+| `src/agent/toolProvider.ts` | Common interface for dynamically supplied agent tools. |
+| `src/auth/tokenStore.ts` | Per-Slack-user GitHub tokens + connected MCP catalog entries + short-lived catalog setup intents. |
 | `src/auth/githubOAuth.ts` | `GET /auth/github`, `GET /auth/github/callback` — the OAuth web flow. |
-| `src/mcp/registry.ts` | `McpToolRegistry` — spawns MCP servers, discovers + namespaces tools, dispatches calls. |
-| `src/mcp/catalog.ts` | Vetted list of connectable products for self-service (fixed command, user supplies credentials only). |
+| `src/auth/connectorCredentials.ts` | Backend-only credential/setup forms for remote and vetted catalog connectors. |
+| `src/mcp/registry.ts` | `McpToolRegistry` — spawns vetted/admin stdio MCP servers, discovers + namespaces tools, dispatches calls. |
+| `src/mcp/catalog.ts` | Vetted list of connectable products for self-service (fixed command, setup values collected via backend form). |
+| `src/mcp/connections.ts` | Remote MCP connection inspection, approval, sharing, selection, authorization, metadata persistence, and credential vault. |
 | `src/connectors/mcpClient.ts` | `StdioMcpClient` — spawns and talks JSON-RPC to one MCP server over stdio. |
+| `src/connectors/remoteMcpClient.ts` | Remote streamable-HTTP MCP client with SSRF-safe fetch. |
+| `src/connectors/publicWebTool.ts` | One-request public webpage reader/tool for pasted links. |
+| `src/security/publicUrl.ts` | Public URL validation and redirect-safe fetch. |
+| `src/security/redaction.ts` | Shared secret redaction for connector logs/tool results. |
 | `src/connectors/*Connector.ts` | Classic-path evidence connectors (keyword search only). |
 | `src/openai/synthesizer.ts` | Classic-path narration (`responses.create`; OpenAI only, not Groq). |
 | `src/slack/app.ts` | Slack commands/events: `/detective` (+ `connect`/`connectors` subcommands), `app_mention`, block actions. |
@@ -132,6 +161,7 @@ but isn't implemented — the current client is stdio-only.
 See `.env.example` for the full annotated list. New in the agentic/OAuth/MCP work: `LLM_API_KEY`,
 `LLM_BASE_URL`, `LLM_MODEL`, `AGENT_ENABLED`, `GITHUB_OAUTH_CLIENT_ID`,
 `GITHUB_OAUTH_CLIENT_SECRET`, `PUBLIC_BASE_URL`, `GITHUB_OAUTH_SCOPES`, `MCP_SERVERS`.
+`PUBLIC_BASE_URL` is also used for remote/catalog connector credential forms.
 `OPENAI_API_KEY`/`OPENAI_MODEL` still work as a back-compat fallback for `LLM_API_KEY`/`LLM_MODEL`.
 
 ## Commands
@@ -144,12 +174,15 @@ See `.env.example` for the full annotated list. New in the agentic/OAuth/MCP wor
 
 ## Known tradeoffs (deliberate, hackathon-scope)
 
-- **No persistence**: `tokenStore.ts` (GitHub tokens, connected MCP catalog entries) and
-  `reportCache.ts` are in-memory `Map`s — everything is lost on process restart. No encryption at
-  rest. Fine for a hackathon demo; would need a real datastore before any real deployment.
+- **Hackathon persistence only**: GitHub tokens and remote connection metadata are stored in
+  gitignored local JSON; catalog connector credentials, remote bearer credentials, pending approval
+  requests, and report cache are in-memory. Remote connections with credential refs are marked
+  inactive after restart because the credential vault is not persisted. No encryption at rest. Fine
+  for a hackathon demo; use a real secret manager/datastore before any real deployment.
 - **Classic path never reads commit diffs**: this is intentional — it's the deterministic,
   zero-config fallback, not a second attempt at the same capability the agent has.
-- **MCP self-service is catalog-only, not free-form**: see the RCE discussion above.
+- **Remote connectors are experimental/untrusted**: the prototype validates public URLs and enforces
+  approval/authorization, but it is not a production connector security model.
 
 ## Conventions for agents working on this repo
 

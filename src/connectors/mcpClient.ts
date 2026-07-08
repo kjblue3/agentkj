@@ -1,9 +1,18 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { redactText } from "../security/redaction.js";
 
 export interface McpTool {
   name: string;
   description?: string;
   inputSchema?: Record<string, unknown>;
+  annotations?: {
+    title?: string;
+    readOnlyHint?: boolean;
+    destructiveHint?: boolean;
+    idempotentHint?: boolean;
+    openWorldHint?: boolean;
+  };
+  requiredScopes?: string[];
 }
 
 export interface McpToolClient {
@@ -90,10 +99,10 @@ export class StdioMcpClient implements McpToolClient {
     this.child.stdout.on("data", (chunk: Buffer) => this.readStdout(chunk));
     this.child.stderr.on("data", (chunk: Buffer) => {
       const text = chunk.toString("utf8").trim();
-      if (text) console.warn(`GitHub MCP stderr: ${text}`);
+      if (text) console.warn(`MCP server stderr: ${redactText(text, Object.values(this.extraEnv))}`);
     });
     this.child.on("exit", (code) => {
-      const error = new Error(`GitHub MCP server exited with code ${code ?? "unknown"}.`);
+      const error = new Error(`MCP server exited with code ${code ?? "unknown"}.`);
       for (const [id, pending] of this.pending.entries()) {
         clearTimeout(pending.timer);
         pending.reject(error);

@@ -218,8 +218,9 @@ describe("real evidence connectors", () => {
 
     const connectors = createConnectors([], { CONNECTOR_MODE: "real" });
 
-    expect(connectors).toHaveLength(5);
+    expect(connectors).toHaveLength(6);
     expect(connectors.map((connector) => connector.name)).toContain("Slack messages");
+    expect(connectors.map((connector) => connector.name)).toContain("Public web pages");
     expect(effectiveConnectorMode(connectors, { CONNECTOR_MODE: "real" })).toBe("demo");
     warn.mockRestore();
   });
