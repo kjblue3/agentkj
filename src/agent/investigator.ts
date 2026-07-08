@@ -1,5 +1,7 @@
 import type OpenAI from "openai";
 import type {
+  ChatCompletion,
+  ChatCompletionCreateParamsNonStreaming,
   ChatCompletionMessageParam,
   ChatCompletionMessageToolCall,
   ChatCompletionTool
@@ -34,8 +36,20 @@ Meta-questions about access or existence ("can you see repo X?", "do you have ac
 \`list_repos\`: if the repo is in the list, the answer is YES — say so with high confidence and include what you can
 see (e.g. its latest commits). The Slack message containing the question itself is never evidence for anything.
 
+Honor constraints stated in the question. The asker IS the connected GitHub account named in the scope context —
+if they say "it wasn't me", commits authored by that person cannot answer "who changed it"; check the other
+accessible repos (especially recently pushed, teammate-owned ones) for changes by someone else before concluding.
+Answer "who changed it?" with the commit author's actual name from the evidence, never a guess.
+
 Call tools iteratively. When you are confident, call \`finish\` with your conclusion. Cite evidence using the
-bracketed [id] values returned by tools. Never invent facts, files, commits, or evidence that no tool returned.`;
+bracketed [id] values returned by tools. Never invent facts, files, commits, or evidence that no tool returned.
+
+When you call \`finish\`, write like a teammate replying in chat — never like a report generator. \`shortAnswer\`
+must be 2-5 complete sentences that BOTH answer the question directly AND justify the answer from the evidence:
+name the specific commit, message, or file, say what it actually showed, and connect that to your conclusion
+(e.g. "Your teammate's commit c5d4f3f rewired the Slack entry point — its diff replaces the slash-command handler
+with the mention handler — which is why the bot now answers mentions."). \`likelyRootCause\` is one plain-English
+sentence. Weave citations into the sentences; never output bare fragments, headings, or lists of IDs.`;
 
 export interface AgentContext {
   github?: GitHubRest;
@@ -43,7 +57,7 @@ export interface AgentContext {
   /** Fixed repo scope, e.g. a shared demo repo. Omit to let the agent search across `login`'s repos. */
   owner?: string;
   repo?: string;
-  /** The connecting user's GitHub login, used to scope search to `user:<login>` when owner/repo aren't fixed. */
+  /** The connecting user's GitHub login; search falls back to the accessible-repo list (then `user:<login>`) when owner/repo aren't fixed. */
   login?: string;
   /** Part 3 hook: additional tool schemas contributed by the pluggable MCP registry (src/mcp/registry.ts). */
   externalTools?: ChatCompletionTool[];
@@ -75,6 +89,20 @@ function normalizeToken(value: string): string {
 function extractFailedGeneration(error: unknown): string | null {
   const anyErr = error as { error?: { failed_generation?: string }; failed_generation?: string } | undefined;
   return anyErr?.error?.failed_generation ?? anyErr?.failed_generation ?? null;
+}
+
+/**
+ * Groq's free tier enforces a small tokens-per-minute budget and its 429 says exactly when the
+ * window resets (both a retry-after header and "try again in Xs" in the message). Returns how
+ * long to wait before retrying, or null when the error isn't a rate limit at all.
+ */
+function rateLimitWaitMs(error: unknown): number | null {
+  const err = error as { status?: number; headers?: { get?: (key: string) => string | null }; message?: string };
+  if (err?.status !== 429) return null;
+  const header = typeof err.headers?.get === "function" ? Number(err.headers.get("retry-after")) : NaN;
+  const fromMessage = Number(/try again in ([\d.]+)s/i.exec(err.message ?? "")?.[1]);
+  const seconds = Number.isFinite(header) && header > 0 ? header : Number.isFinite(fromMessage) ? fromMessage : 15;
+  return Math.round(Math.min(Math.max(seconds + 1, 2), 30) * 1000);
 }
 
 function parseFailedGeneration(text: string): { name: string; args: Record<string, unknown> } | null {
@@ -124,9 +152,10 @@ function tool(name: string, description: string, parameters: Record<string, unkn
 function fallbackFinish(evidence: EvidenceItem[]): FinishArgs {
   if (evidence.length === 0) {
     return {
-      shortAnswer: "No evidence was found using the available tools.",
+      shortAnswer:
+        "I dug through everything I have access to but couldn't find any evidence that speaks to this one. If you name a specific repo, file, or a narrower symptom, I'll know where to look and can take another run at it.",
       confidence: "low",
-      likelyRootCause: "Unable to determine a root cause — try naming a repo, file, or narrower symptom.",
+      likelyRootCause: "I couldn't determine a root cause because no relevant evidence turned up in the connected sources.",
       openQuestions: ["Which repository or channel should be investigated?"],
       recommendedActions: ["Point the investigation at a specific repo or time range and retry."]
     };
@@ -136,11 +165,12 @@ function fallbackFinish(evidence: EvidenceItem[]): FinishArgs {
   // behavior of presenting evidence[0]'s title as "the answer" produced nonsense like a Slack
   // message title being reported as the short answer.
   return {
-    shortAnswer: `The investigation was interrupted before reaching a conclusion, but ${evidence.length} piece(s) of evidence were collected — see the evidence board.`,
+    shortAnswer:
+      `I wasn't able to finish this one — my language model backend gave out partway through, which is usually a rate limit that clears within a minute. Before it stopped I did collect ${evidence.length} clue${evidence.length === 1 ? "" : "s"}, and the strongest lead is "${truncate(evidence[0]!.title, 160)}" — everything I found is on the evidence board below.`,
     confidence: "low",
-    likelyRootCause: "Not determined — the agent stopped early. The strongest lead so far: " + truncate(evidence[0]!.title, 200),
+    likelyRootCause: `I didn't get far enough to pin down a root cause, but the most promising lead so far is "${truncate(evidence[0]!.title, 160)}".`,
     openQuestions: ["Does the collected evidence explain the symptom, or should the investigation be rerun?"],
-    recommendedActions: ["Ask the question again — transient LLM errors usually don't repeat."]
+    recommendedActions: ["Ask the question again in a minute — the backend rate limit resets quickly."]
   };
 }
 
@@ -164,7 +194,7 @@ export class AgentInvestigator {
 
     const messages: ChatCompletionMessageParam[] = [
       { role: "system", content: SYSTEM_PROMPT },
-      { role: "system", content: this.scopeContext(ctx) },
+      { role: "system", content: await this.scopeContext(ctx) },
       { role: "user", content: question },
       {
         role: "user",
@@ -192,7 +222,7 @@ export class AgentInvestigator {
       };
       let response;
       try {
-        response = await this.client.chat.completions.create(request);
+        response = await this.createChatCompletion(request);
       } catch (error) {
         const recovered = parseFailedGeneration(extractFailedGeneration(error) ?? "");
         if (recovered) {
@@ -214,7 +244,7 @@ export class AgentInvestigator {
           content: "Your last tool call was not valid JSON. Call exactly one tool at a time using the provided schema."
         });
         try {
-          response = await this.client.chat.completions.create(request);
+          response = await this.createChatCompletion(request);
         } catch (retryError) {
           const recoveredRetry = parseFailedGeneration(extractFailedGeneration(retryError) ?? "");
           if (recoveredRetry) {
@@ -269,6 +299,25 @@ export class AgentInvestigator {
     });
   }
 
+  /**
+   * LLM call that waits out 429s instead of surfacing them. The old immediate retry was
+   * guaranteed to fail inside the same TPM window, which is what turned one busy minute into a
+   * dead "investigation was interrupted" report — the 429 already says when the window resets,
+   * so sleep until then (bounded, max twice) and only then give up.
+   */
+  private async createChatCompletion(request: ChatCompletionCreateParamsNonStreaming): Promise<ChatCompletion> {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await this.client.chat.completions.create(request);
+      } catch (error) {
+        const waitMs = rateLimitWaitMs(error);
+        if (waitMs === null || attempt >= 2) throw error;
+        console.warn(`Agent loop: LLM rate limited; waiting ${Math.round(waitMs / 1000)}s for the window to reset.`);
+        await new Promise((resolve) => setTimeout(resolve, waitMs));
+      }
+    }
+  }
+
   /** Executes a tool call recovered from a mangled Groq generation as if it had arrived normally. */
   private async runRecoveredCall(
     recovered: { name: string; args: Record<string, unknown> },
@@ -314,7 +363,12 @@ export class AgentInvestigator {
       tasks.push(this.toolSearchSlack({ query: question }, ctx, evidence).catch(() => null));
     }
     await Promise.all(tasks);
-    return [...evidence.values()].map((item) => `- [${item.id}] ${item.title}`).join("\n");
+    // Bounded: every line here is re-read by the model on all subsequent iterations, so a big
+    // scan multiplies its own token cost by the iteration count.
+    return [...evidence.values()]
+      .slice(0, 20)
+      .map((item) => `- [${item.id}] ${item.title}`)
+      .join("\n");
   }
 
   /**
@@ -373,9 +427,9 @@ export class AgentInvestigator {
     return owner ? { owner, repo: repoCandidate } : null;
   }
 
-  private scopeContext(ctx: AgentContext): string {
+  private async scopeContext(ctx: AgentContext): Promise<string> {
     const lines: string[] = [];
-    if (ctx.login) lines.push(`Connected GitHub account: ${ctx.login}.`);
+    if (ctx.login) lines.push(`Connected GitHub account — this is the person asking: ${ctx.login}.`);
     if (ctx.owner && ctx.repo) {
       lines.push(`Resolved repo scope for this investigation: ${ctx.owner}/${ctx.repo}. Use this owner/repo by default.`);
     } else if (ctx.login) {
@@ -383,6 +437,17 @@ export class AgentInvestigator {
         `No single repo is fixed yet. If the question names a repo without an owner, call list_repos to find its ` +
           `exact owner (default to ${ctx.login} if it's not obviously someone else's), then use that pair for ` +
           `list_recent_commits/get_commit/read_file.`
+      );
+    }
+    const repos = await this.getAccessibleRepos(ctx);
+    if (repos.length > 0) {
+      const listed = repos
+        .slice(0, 6)
+        .map((r) => `${r.fullName}${r.pushedAt ? ` (last push ${r.pushedAt.slice(0, 10)})` : ""}`)
+        .join(", ");
+      lines.push(
+        `Accessible repos, most recently pushed first (includes teammate-owned repos this account collaborates on): ${listed}. ` +
+          `When the question says "the repo" without naming one, the most recently pushed of these is where to look first.`
       );
     }
     return lines.length > 0 ? lines.join(" ") : "No GitHub account is connected for this investigation.";
@@ -462,9 +527,16 @@ export class AgentInvestigator {
         {
           type: "object",
           properties: {
-            shortAnswer: { type: "string" },
+            shortAnswer: {
+              type: "string",
+              description:
+                "2-5 conversational sentences: the direct answer PLUS the justification — which commit/message/file showed it and why that supports the conclusion. No fragments or headings."
+            },
             confidence: { type: "string", enum: ["low", "medium", "high"] },
-            likelyRootCause: { type: "string" },
+            likelyRootCause: {
+              type: "string",
+              description: "One plain-English sentence naming the root cause, or honestly saying what is still unknown and why."
+            },
             openQuestions: { type: "array", items: { type: "string" } },
             recommendedActions: { type: "array", items: { type: "string" } }
           },
@@ -516,17 +588,36 @@ export class AgentInvestigator {
     }
   }
 
-  private scopeQualifier(args: Record<string, unknown>, ctx: AgentContext): string {
+  private async scopeQualifier(args: Record<string, unknown>, ctx: AgentContext): Promise<string> {
     const owner = (args.owner as string | undefined) ?? ctx.owner;
     const repo = (args.repo as string | undefined) ?? ctx.repo;
     if (owner && repo) return `repo:${owner}/${repo}`;
+
+    // GitHub's `user:` qualifier only matches repos the login OWNS, silently hiding
+    // teammate-owned repos this account collaborates on — which made "something changed in the
+    // repo" find the asker's own seeded repo instead of the teammate repo where the change was.
+    // Scope to the actual accessible repo list instead (bounded: search queries max out at 256
+    // chars, so stop adding qualifiers past ~140).
+    const repos = await this.getAccessibleRepos(ctx);
+    if (repos.length > 0) {
+      const qualifiers: string[] = [];
+      let length = 0;
+      for (const r of repos) {
+        const qualifier = `repo:${r.fullName}`;
+        if (length + qualifier.length + 1 > 140) break;
+        qualifiers.push(qualifier);
+        length += qualifier.length + 1;
+      }
+      if (qualifiers.length > 0) return qualifiers.join(" ");
+    }
+
     if (ctx.login) return `user:${ctx.login}`;
     return "";
   }
 
   private async toolSearchCode(args: Record<string, unknown>, ctx: AgentContext, evidence: Map<string, EvidenceItem>) {
     if (!ctx.github) return { error: "GitHub is not connected." };
-    const q = `${String(args.q ?? "")} ${this.scopeQualifier(args, ctx)}`.trim();
+    const q = `${String(args.q ?? "")} ${await this.scopeQualifier(args, ctx)}`.trim();
     if (!q) return { error: "A search query is required." };
     const items = await ctx.github.searchCode({ q });
     const mapped = items.map((raw) => this.codeToEvidence(raw, ctx));
@@ -536,7 +627,7 @@ export class AgentInvestigator {
 
   private async toolSearchIssues(args: Record<string, unknown>, ctx: AgentContext, evidence: Map<string, EvidenceItem>) {
     if (!ctx.github) return { error: "GitHub is not connected." };
-    const q = `${String(args.q ?? "")} ${this.scopeQualifier(args, ctx)}`.trim();
+    const q = `${String(args.q ?? "")} ${await this.scopeQualifier(args, ctx)}`.trim();
     if (!q) return { error: "A search query is required." };
     const items = await ctx.github.searchIssues({ q });
     const mapped = items.map((raw) => this.issueToEvidence(raw, ctx));
@@ -583,9 +674,17 @@ export class AgentInvestigator {
     const commit = await ctx.github.getCommit({ owner, repo, sha });
     if (!commit) return { error: "Commit not found." };
 
-    const diffText = commit.files
-      .map((file) => `--- ${file.filename} (${file.status}, +${file.additions}/-${file.deletions})\n${file.patch ?? "(no textual diff — binary or too large)"}`)
-      .join("\n\n");
+    // Lock files and build artifacts produce enormous, meaningless patches that crowd the real
+    // change out of the bounded diff the model sees — list them by name only. Cap each remaining
+    // file's patch so a multi-file commit shows every file's head instead of one file's entirety.
+    const noiseFile = /(^|\/)(package-lock\.json|yarn\.lock|pnpm-lock\.yaml|Cargo\.lock|poetry\.lock|composer\.lock|go\.sum)$|\.(min\.(js|css)|map|snap|svg)$|(^|\/)(dist|build|node_modules|vendor)\//;
+    const meaningful = commit.files.filter((file) => !noiseFile.test(file.filename));
+    const files = meaningful.length > 0 ? meaningful : commit.files;
+    const skipped = commit.files.filter((file) => !files.includes(file)).map((file) => file.filename);
+    const diffText = [
+      ...files.map((file) => `--- ${file.filename} (${file.status}, +${file.additions}/-${file.deletions})\n${truncate(file.patch ?? "(no textual diff — binary or too large)", 1200)}`),
+      ...(skipped.length > 0 ? [`(generated/vendored files omitted: ${skipped.join(", ")})`] : [])
+    ].join("\n\n");
 
     const item = normalizeEvidenceItem({
       id: `github:commit:${owner}/${repo}:${commit.sha}`,

@@ -127,14 +127,21 @@ export class GitHubRest {
   }
 
   async searchIssues(params: { q: string }): Promise<Record<string, unknown>[]> {
-    const query = new URLSearchParams({ q: params.q, per_page: "10" });
-    const payload = await fetchJson<RawSearchResponse<Record<string, unknown>>>(
-      this.fetcher,
-      `https://api.github.com/search/issues?${query.toString()}`,
-      { headers: this.headers() },
-      this.name
+    // GitHub's /search/issues rejects queries that don't state is:issue or is:pull-request
+    // (422), and one query can't ask for both — so run both qualifiers and merge.
+    const results = await Promise.all(
+      ["is:issue", "is:pull-request"].map(async (qualifier) => {
+        const query = new URLSearchParams({ q: `${params.q} ${qualifier}`, per_page: "10" });
+        const payload = await fetchJson<RawSearchResponse<Record<string, unknown>>>(
+          this.fetcher,
+          `https://api.github.com/search/issues?${query.toString()}`,
+          { headers: this.headers() },
+          this.name
+        );
+        return payload?.items ?? [];
+      })
     );
-    return payload?.items ?? [];
+    return results.flat();
   }
 
   async getFileContents(params: { owner: string; repo: string; path: string; ref?: string }): Promise<string | null> {

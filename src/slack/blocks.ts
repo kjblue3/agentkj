@@ -147,11 +147,11 @@ export function buildReportBlocks(report: InvestigationResult, reportId: string)
     { type: "divider" },
     {
       type: "section",
-      text: { type: "mrkdwn", text: `*Short answer*\n${truncate(report.shortAnswer, 700)}` }
+      text: { type: "mrkdwn", text: `*Short answer*\n${truncate(report.shortAnswer, 2200)}` }
     },
     {
       type: "section",
-      text: { type: "mrkdwn", text: `*Likely root cause*\n${truncate(report.likelyRootCause, 700)}` }
+      text: { type: "mrkdwn", text: `*Likely root cause*\n${truncate(report.likelyRootCause, 1200)}` }
     },
     { type: "divider" },
     {

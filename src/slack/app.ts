@@ -1,5 +1,6 @@
 import { App } from "@slack/bolt";
 import type { Block, KnownBlock } from "@slack/types";
+import { signOAuthState } from "../auth/githubOAuth.js";
 import { getValidGitHubToken, listUserConnectors, setUserConnector } from "../auth/tokenStore.js";
 import type { InvestigationPipeline } from "../investigation/pipeline.js";
 import { describeCatalog, findCatalogEntry } from "../mcp/catalog.js";
@@ -40,7 +41,7 @@ function connectGitHubText(slackUserId: string): string {
   if (!base) {
     return "GitHub isn't connected yet, and this deployment hasn't set `PUBLIC_BASE_URL`, so I can't give you a connect link. Ask whoever runs this bot to finish GitHub OAuth setup.";
   }
-  return `You haven't connected your GitHub yet. <${base}/auth/github?state=${encodeURIComponent(slackUserId)}|Connect your GitHub> so I can investigate *your* repos, then run this again.`;
+  return `You haven't connected your GitHub yet. <${base}/auth/github?state=${encodeURIComponent(signOAuthState(slackUserId))}|Connect your GitHub> so I can investigate *your* repos, then run this again.`;
 }
 
 /** Splits a leading `owner/repo` token off the question text, if present, e.g. "acme/site why is it red" */
