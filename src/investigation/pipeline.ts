@@ -1,9 +1,11 @@
 import { AgentInvestigator, type AgentContext } from "../agent/investigator.js";
+import type { AgentToolProvider } from "../agent/toolProvider.js";
 import type { EvidenceConnector } from "../connectors/types.js";
 import { SlackConnector } from "../connectors/slackConnector.js";
 import { GitHubRest } from "../github/githubRest.js";
 import { createLlmClient, llmModel } from "../llm/client.js";
 import type { McpToolRegistry } from "../mcp/registry.js";
+import { readPublicPage } from "../connectors/publicWebTool.js";
 import type { Synthesizer } from "../openai/synthesizer.js";
 import type { InvestigationResult } from "../types/schemas.js";
 import { parseQuestion } from "./queryParser.js";
@@ -24,6 +26,10 @@ export interface InvestigateOptions {
   repo?: string;
   /** Part 3: this requester's self-service connectors, merged with the pipeline's global registry. */
   mcpRegistry?: McpToolRegistry;
+  /** One-request and authorized remote tools, merged after the user's catalog registry. */
+  toolProviders?: AgentToolProvider[];
+  /** Public link attached to this request; used for deterministic fallback when no agent LLM exists. */
+  publicUrl?: string;
 }
 
 /**
@@ -56,6 +62,7 @@ export class InvestigationPipeline {
       const result = await this.tryAgentInvestigate(question, opts);
       if (result) return this.withMetadata(result);
     }
+    if (opts.publicUrl) return this.withMetadata(await this.publicLinkInvestigate(question, opts.publicUrl));
     return this.withMetadata(await this.classicInvestigate(question));
   }
 
@@ -75,10 +82,13 @@ export class InvestigationPipeline {
     const owner = opts.owner ?? (opts.githubToken ? undefined : process.env.GITHUB_OWNER);
     const repo = opts.repo ?? (opts.githubToken ? undefined : process.env.GITHUB_DEMO_REPO || process.env.GITHUB_REPOS?.split(",")[0]?.trim());
 
-    const globalTools = this.globalMcpRegistry ? await this.globalMcpRegistry.listAgentTools() : [];
-    const userTools = opts.mcpRegistry ? await opts.mcpRegistry.listAgentTools() : [];
-    const externalTools = [...globalTools, ...userTools];
-    const externalCall = externalTools.length > 0 ? this.dispatchExternalTool(opts.mcpRegistry) : undefined;
+    const providers: AgentToolProvider[] = [
+      ...(this.globalMcpRegistry ? [this.globalMcpRegistry] : []),
+      ...(opts.mcpRegistry ? [opts.mcpRegistry] : []),
+      ...(opts.toolProviders ?? [])
+    ];
+    const externalTools = (await Promise.all(providers.map((provider) => provider.listAgentTools()))).flat();
+    const externalCall = externalTools.length > 0 ? this.dispatchExternalTool(providers) : undefined;
 
     const ctx: AgentContext = {
       github,
@@ -95,11 +105,11 @@ export class InvestigationPipeline {
   }
 
   private dispatchExternalTool(
-    userRegistry?: McpToolRegistry
+    providers: AgentToolProvider[]
   ): (name: string, args: Record<string, unknown>) => Promise<unknown> {
     return async (name, args) => {
-      if (userRegistry?.has(name)) return userRegistry.call(name, args);
-      if (this.globalMcpRegistry?.has(name)) return this.globalMcpRegistry.call(name, args);
+      const provider = providers.find((candidate) => candidate.has(name));
+      if (provider) return provider.call(name, args);
       return { error: `Unknown connector tool: ${name}` };
     };
   }
@@ -115,6 +125,23 @@ export class InvestigationPipeline {
     }));
     const timeline = buildTimeline(evidence);
     return this.synthesizer.synthesize(question, evidence, timeline);
+  }
+
+  private async publicLinkInvestigate(question: string, url: string): Promise<InvestigationResult> {
+    const page = await readPublicPage(url);
+    if ("error" in page) return this.classicInvestigate(question);
+    const evidence = [{
+      id: `web:${Buffer.from(page.sourceUrl).toString("base64url").slice(0, 48)}`,
+      source: "web" as const,
+      title: page.title || new URL(page.sourceUrl).hostname,
+      body: page.content,
+      url: page.sourceUrl,
+      timestamp: new Date().toISOString(),
+      entities: [],
+      tags: ["public-link"],
+      confidence: 0.8
+    }];
+    return this.synthesizer.synthesize(question, evidence, buildTimeline(evidence));
   }
 
   private withMetadata(result: InvestigationResult): InvestigationResult {

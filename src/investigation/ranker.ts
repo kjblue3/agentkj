@@ -10,7 +10,8 @@ const sourceBoost = {
   docs: 1.1,
   github: 1.2,
   jira: 1,
-  slack: 0.8
+  slack: 0.8,
+  web: 0.9
 } as const;
 
 export function scoreEvidence(

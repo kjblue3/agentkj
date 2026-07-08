@@ -33,7 +33,8 @@ const sourceIcon = {
   github: "🔀",
   jira: "🎫",
   docs: "📄",
-  incident: "🚨"
+  incident: "🚨",
+  web: "🌐"
 } as const;
 
 function dateLabel(timestamp: string): string {

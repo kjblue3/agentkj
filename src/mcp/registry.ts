@@ -1,6 +1,8 @@
 import { readFileSync } from "node:fs";
 import type { ChatCompletionTool } from "openai/resources/chat/completions";
+import type { AgentToolProvider } from "../agent/toolProvider.js";
 import { StdioMcpClient, type McpToolClient } from "../connectors/mcpClient.js";
+import { redactSecrets } from "../security/redaction.js";
 
 /**
  * Generic, pluggable MCP connector registry. This is what makes "our users can tack on
@@ -15,7 +17,8 @@ import { StdioMcpClient, type McpToolClient } from "../connectors/mcpClient.js";
  * execution. This registry itself is transport-agnostic re: *where* specs come from — the admin
  * config loader below (loadGlobalServerSpecs) is safe because only an admin edits mcp.json/env.
  * Per-user self-service (src/mcp/catalog.ts) must NEVER accept a free-form command from a user —
- * it only lets them pick a vetted catalog entry and supply credentials. Free-form local specs
+ * it only lets them pick a vetted catalog entry and submit setup values through a backend form.
+ * Free-form local specs
  * are fine for a single-user self-hosted install, never for a shared multi-tenant deployment.
  */
 
@@ -34,14 +37,16 @@ interface NamespacedTool {
   inputSchema?: Record<string, unknown>;
 }
 
-export class McpToolRegistry {
+export class McpToolRegistry implements AgentToolProvider {
   private readonly clients = new Map<string, McpToolClient>();
+  private readonly secretsByServer = new Map<string, string[]>();
   private readonly tools = new Map<string, NamespacedTool>();
   private discovered = false;
 
   constructor(private readonly specs: McpServerSpec[]) {
     for (const spec of specs) {
       this.clients.set(spec.name, new StdioMcpClient(spec.command, undefined, spec.env ?? {}));
+      this.secretsByServer.set(spec.name, Object.values(spec.env ?? {}));
     }
   }
 
@@ -94,7 +99,11 @@ export class McpToolRegistry {
     if (!tool) return { error: `Unknown connector tool: ${namespacedName}` };
     const client = this.clients.get(tool.serverName);
     if (!client) return { error: `Connector "${tool.serverName}" is not running.` };
-    return client.callTool(tool.originalName, args);
+    const result = await client.callTool(tool.originalName, args);
+    return {
+      connectorResult: redactSecrets(result, this.secretsByServer.get(tool.serverName)),
+      security: "Connector output is treated as untrusted data; configured secrets are redacted before model use."
+    };
   }
 
   async close(): Promise<void> {

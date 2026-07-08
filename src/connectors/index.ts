@@ -14,7 +14,8 @@ const labels: Record<EvidenceSource, string> = {
   github: "GitHub",
   jira: "Jira",
   docs: "Google Docs",
-  incident: "Incident reports"
+  incident: "Incident reports",
+  web: "Public web pages"
 };
 
 export type ConnectorMode = "demo" | "real" | "hybrid";

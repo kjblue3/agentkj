@@ -5,7 +5,8 @@ export const evidenceSourceSchema = z.enum([
   "github",
   "jira",
   "docs",
-  "incident"
+  "incident",
+  "web"
 ]);
 
 export const evidenceItemSchema = z.object({

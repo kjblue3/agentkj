@@ -43,6 +43,12 @@ Click **Create follow-up** to open the Slack modal, then **Mark solved**.
 
 Say: “OpenAI can polish the final report, but search, scoring, evidence selection, timeline construction, and fallback synthesis are deterministic. The live path uses real seeded Slack messages and a real GitHub sandbox through MCP; if credentials are unavailable during judging, demo mode still proves the full Slack workflow.”
 
+If showing the dynamic connector path, paste a public article URL and ask for a summary, then run:
+
+> connect https://your-demo-mcp.example/mcp
+
+Point out that Slack Detective validates the URL, displays the remote connector URL and advertised tools, and enables nothing until the user explicitly approves it. If the connector needs a bearer token, the token is entered through a backend form instead of Slack.
+
 ## 2:40–3:00 — Close
 
 “Slack Detective shortens the expensive part of incident response and institutional memory: finding out what actually happened and proving it. Scattered clues in. Evidence-backed answers out.”

@@ -1,9 +1,25 @@
 import { App } from "@slack/bolt";
 import type { Block, KnownBlock } from "@slack/types";
 import { signOAuthState } from "../auth/githubOAuth.js";
-import { getValidGitHubToken, listUserConnectors, setUserConnector } from "../auth/tokenStore.js";
+import {
+  createUserConnectorCredentialIntent,
+  getValidGitHubToken,
+  listUserConnectors,
+  setUserConnector
+} from "../auth/tokenStore.js";
 import type { InvestigationPipeline } from "../investigation/pipeline.js";
+import { extractPublicUrl, PublicWebToolProvider } from "../connectors/publicWebTool.js";
 import { describeCatalog, findCatalogEntry } from "../mcp/catalog.js";
+import {
+  approveRemoteConnector,
+  AuthorizedConnectionToolProvider,
+  createCredentialIntent,
+  inspectRemoteConnector,
+  listConnectionsForOwner,
+  shareRemoteConnection,
+  type AccessMode,
+  type ConnectionScope
+} from "../mcp/connections.js";
 import { McpToolRegistry, type McpServerSpec } from "../mcp/registry.js";
 import {
   buildEvidenceBlocks,
@@ -12,8 +28,8 @@ import {
 } from "./blocks.js";
 import { cacheReport, getCachedReport } from "./reportCache.js";
 
-/** Per-user MCP registries, built lazily from tokenStore's userConnectors and cached by user id. */
-const userMcpRegistries = new Map<string, McpToolRegistry>();
+/** Per-user MCP registries, built lazily from tokenStore's userConnectors and refreshed when setup changes. */
+const userMcpRegistries = new Map<string, { signature: string; registry: McpToolRegistry }>();
 
 function connectorSpecFor(slackUserId: string, catalogId: string, credentials: Record<string, string>): McpServerSpec {
   return { name: `${slackUserId}:${catalogId}`, command: findCatalogEntry(catalogId)!.command, env: credentials };
@@ -23,16 +39,22 @@ function userMcpRegistry(slackUserId: string): McpToolRegistry | undefined {
   const connectors = listUserConnectors(slackUserId);
   if (connectors.length === 0) return undefined;
   const cacheKey = slackUserId;
+  const signature = JSON.stringify(connectors.map((connector) => [
+    connector.catalogId,
+    connector.connectedAt,
+    Object.keys(connector.credentials).sort()
+  ]));
   const existing = userMcpRegistries.get(cacheKey);
-  if (existing) return existing;
+  if (existing?.signature === signature) return existing.registry;
+  existing?.registry.close().catch(() => undefined);
   const specs = connectors.map((connector) => connectorSpecFor(slackUserId, connector.catalogId, connector.credentials));
   const registry = new McpToolRegistry(specs);
-  userMcpRegistries.set(cacheKey, registry);
+  userMcpRegistries.set(cacheKey, { signature, registry });
   return registry;
 }
 
 function invalidateUserMcpRegistry(slackUserId: string): void {
-  userMcpRegistries.get(slackUserId)?.close().catch(() => undefined);
+  userMcpRegistries.get(slackUserId)?.registry.close().catch(() => undefined);
   userMcpRegistries.delete(slackUserId);
 }
 
@@ -95,11 +117,13 @@ type SlackIntentArgs = {
   reply: SlackIntentReply;
   postReport: (reportText: string, blocks: SlackBlock[]) => Promise<unknown>;
   source: "slash" | "mention";
+  workspaceId?: string;
 };
 
 function usageText(): string {
   return "Ask me in Slack, e.g. `@agentkj why did checkout latency spike?`\n" +
-    "Other commands: `@agentkj connect github`, `@agentkj connectors`, `@agentkj connect <catalog-id> KEY=value ...`";
+    "Paste a public link to read it, or use `@agentkj connect <https://remote-mcp-url>`.\n" +
+    "Other commands: `@agentkj connect github`, `@agentkj connectors`, `@agentkj connect <catalog-id>`.";
 }
 
 function objectAt(value: unknown, key: string): Record<string, unknown> | undefined {
@@ -278,10 +302,12 @@ export async function handleFollowupSubmitAction({ ack, body, client }: Followup
 export async function handleSlackIntent({
   text,
   userId,
+  channelId,
   pipeline,
   reply,
   postReport,
-  source
+  source,
+  workspaceId = process.env.SLACK_WORKSPACE_ID ?? "unknown"
 }: SlackIntentArgs): Promise<void> {
   const trimmed = text.trim();
 
@@ -297,19 +323,128 @@ export async function handleSlackIntent({
 
   if (trimmed === "connectors") {
     const connected = listUserConnectors(userId);
+    const remote = listConnectionsForOwner(userId);
     const connectedText = connected.length > 0
       ? connected.map((c) => `• \`${c.catalogId}\` — connected ${c.connectedAt}`).join("\n")
+      : "_none yet_";
+    const remoteText = remote.length > 0
+      ? remote.map((connection) =>
+          `• \`${connection.id}\` — *${connection.name}* (${connection.scope}, ${connection.accessMode}, ` +
+          `${connection.active ? "active" : "awaiting credential"})\n  ${connection.url}`
+        ).join("\n")
       : "_none yet_";
     await reply({
       response_type: "ephemeral",
       text:
-        `*Your connectors:*\n${connectedText}\n\n*Available to connect:*\n${describeCatalog()}\n\n` +
-        "Connect one with `@agentkj connect <catalog-id> KEY=value KEY2=value2`."
+        `*Your remote connectors:*\n${remoteText}\n\n*Your catalog connectors:*\n${connectedText}\n\n` +
+        `*Available catalog connectors:*\n${describeCatalog()}\n\n` +
+        "Connect an experimental remote MCP server with `@agentkj connect https://…`, or a vetted one with " +
+        "`@agentkj connect <catalog-id>` to open a secure setup form."
     });
     return;
   }
 
+  if (trimmed.startsWith("approve ")) {
+    const [, pendingId, ...flags] = trimmed.split(/\s+/);
+    const scope: ConnectionScope = flags.includes("shared") ? "shared" : "personal";
+    const accessMode: AccessMode = flags.includes("read-write") ? "read-write" : "read-only";
+    const credential = flags.includes("bearer") ? "bearer" : "none";
+    try {
+      const connection = approveRemoteConnector(pendingId ?? "", userId, { scope, accessMode, credential });
+      if (credential === "bearer") {
+        const baseUrl = process.env.PUBLIC_BASE_URL;
+        if (!baseUrl) {
+          await reply({
+            response_type: "ephemeral",
+            text:
+              `Approved *${connection.name}*, but it is not active because this deployment has no ` +
+              "`PUBLIC_BASE_URL` for the secure credential form."
+          });
+          return;
+        }
+        const secret = createCredentialIntent(connection.id, userId);
+        await reply({
+          response_type: "ephemeral",
+          text:
+            `Approved *${connection.name}* as ${scope} / ${accessMode}. ` +
+            `<${baseUrl}/auth/connectors/${secret}|Enter the provider credential securely> within 15 minutes. ` +
+            "Do not paste credentials into Slack."
+        });
+      } else {
+        await reply({
+          response_type: "ephemeral",
+          text: `Approved and enabled *${connection.name}* as ${scope} / ${accessMode}.`
+        });
+      }
+    } catch (error) {
+      await reply({
+        response_type: "ephemeral",
+        text: error instanceof Error ? error.message : "That connector could not be approved."
+      });
+    }
+    return;
+  }
+
+  if (trimmed.startsWith("share ")) {
+    const [, connectionId, targetType, targetId, mode] = trimmed.split(/\s+/);
+    if (!["user", "channel"].includes(targetType ?? "") || !targetId) {
+      await reply({
+        response_type: "ephemeral",
+        text: "Use `@agentkj share <connection-id> user <U…>` or `share <connection-id> channel <C…>`."
+      });
+      return;
+    }
+    try {
+      const connection = shareRemoteConnection(connectionId ?? "", userId, {
+        userId: targetType === "user" ? targetId : undefined,
+        channelId: targetType === "channel" ? targetId : undefined,
+        accessMode: mode === "read-write" ? "read-write" : "read-only"
+      });
+      await reply({
+        response_type: "ephemeral",
+        text:
+          `Shared *${connection.name}* with that ${targetType}. The backend keeps the provider credential private ` +
+          "and rechecks user, channel, tool, scope, and approval on every call."
+      });
+    } catch (error) {
+      await reply({
+        response_type: "ephemeral",
+        text: error instanceof Error ? error.message : "That connection could not be shared."
+      });
+    }
+    return;
+  }
+
   if (trimmed.startsWith("connect ")) {
+    const remoteUrl = extractPublicUrl(trimmed);
+    if (remoteUrl) {
+      try {
+        const pending = await inspectRemoteConnector(remoteUrl, { userId, workspaceId, channelId });
+        const toolLines = pending.tools.length > 0
+          ? pending.tools.map((tool) => {
+              const mode = tool.readOnlyHint ? "read-only" : tool.destructiveHint ? "may write/delete" : "unspecified";
+              const scopes = tool.requiredScopes.length > 0 ? `; scopes: ${tool.requiredScopes.join(", ")}` : "";
+              return `• \`${tool.name}\` — ${mode}${scopes}`;
+            }).join("\n")
+          : "_No tools were advertised._";
+        await reply({
+          response_type: "ephemeral",
+          text:
+            `*Experimental, untrusted remote connector*\n*Name:* ${pending.name}\n*URL:* ${pending.url}\n` +
+            `*Available tools and requested permissions:*\n${toolLines}\n\n` +
+            "Nothing has been enabled. Review it, then explicitly approve with " +
+            `\`@agentkj approve ${pending.id} personal read-only\`. Add \`shared\`, \`read-write\`, or ` +
+            "`bearer` only if you intend those permissions. Never paste a credential into Slack."
+        });
+      } catch (error) {
+        await reply({
+          response_type: "ephemeral",
+          text: error instanceof Error ? error.message : "That remote MCP URL could not be inspected."
+        });
+      }
+      return;
+    }
+
     const [, catalogId, ...pairs] = trimmed.split(/\s+/);
     const entry = catalogId ? findCatalogEntry(catalogId) : undefined;
     if (!entry) {
@@ -319,24 +454,40 @@ export async function handleSlackIntent({
       });
       return;
     }
-    const credentials: Record<string, string> = {};
-    for (const pair of pairs) {
-      const eq = pair.indexOf("=");
-      if (eq === -1) continue;
-      credentials[pair.slice(0, eq)] = pair.slice(eq + 1);
-    }
-    const missing = entry.credentialFields.filter((field) => !credentials[field]);
-    if (missing.length > 0) {
+    if (pairs.some((pair) => pair.includes("="))) {
       await reply({
         response_type: "ephemeral",
-        text: `\`${catalogId}\` needs: ${missing.join(", ")}. Example: \`@agentkj connect ${catalogId} ${entry.credentialFields.map((f) => `${f}=...`).join(" ")}\``
+        text:
+          "I won't collect connector credentials in Slack. Run " +
+          `\`@agentkj connect ${entry.id}\` with no values and I’ll send a secure setup link.`
+      });
+      return;
+    }
+    if (entry.credentialFields.length > 0) {
+      const baseUrl = process.env.PUBLIC_BASE_URL;
+      if (!baseUrl) {
+        await reply({
+          response_type: "ephemeral",
+          text:
+            `\`${entry.id}\` needs secure setup values (${entry.credentialFields.join(", ")}), but this ` +
+            "deployment has no `PUBLIC_BASE_URL` for the setup form."
+        });
+        return;
+      }
+      const secret = createUserConnectorCredentialIntent(userId, entry.id);
+      await reply({
+        response_type: "ephemeral",
+        text:
+          `Open this secure setup form for *${entry.label}* within 15 minutes: ` +
+          `<${baseUrl}/auth/catalog-connectors/${secret}|Connect ${entry.label}>. ` +
+          "Do not paste credentials into Slack."
       });
       return;
     }
     setUserConnector(userId, {
       catalogId: entry.id,
       label: entry.label,
-      credentials,
+      credentials: {},
       connectedAt: new Date().toISOString()
     });
     invalidateUserMcpRegistry(userId);
@@ -344,8 +495,11 @@ export async function handleSlackIntent({
     return;
   }
 
+  const publicUrl = extractPublicUrl(trimmed);
+  const remoteProvider = new AuthorizedConnectionToolProvider({ userId, workspaceId, channelId });
+  const remoteTools = await remoteProvider.listAgentTools();
   const githubToken = await getValidGitHubToken(userId);
-  if (!githubToken) {
+  if (!githubToken && !publicUrl && remoteTools.length === 0) {
     await reply({ response_type: "ephemeral", text: connectGitHubText(userId) });
     return;
   }
@@ -354,11 +508,16 @@ export async function handleSlackIntent({
   const { owner, repo, question } = parseOwnerRepo(trimmed);
   try {
     const report = await pipeline.investigate(question, {
-      githubToken: githubToken.token,
-      githubLogin: githubToken.login,
+      githubToken: githubToken?.token,
+      githubLogin: githubToken?.login,
       owner,
       repo,
-      mcpRegistry: userMcpRegistry(userId)
+      mcpRegistry: userMcpRegistry(userId),
+      publicUrl,
+      toolProviders: [
+        ...(publicUrl ? [new PublicWebToolProvider(publicUrl)] : []),
+        ...(remoteTools.length > 0 ? [remoteProvider] : [])
+      ]
     });
     const reportId = cacheReport(report);
     await postReport(`Detective Report: ${report.shortAnswer}`, buildReportBlocks(report, reportId));
@@ -385,6 +544,7 @@ export function createSlackApp(pipeline: InvestigationPipeline): App | null {
       text: command.text,
       userId: command.user_id,
       channelId: command.channel_id,
+      workspaceId: command.team_id,
       pipeline,
       reply: respond,
       postReport: (text, blocks) => app.client.chat.postMessage({
@@ -411,6 +571,7 @@ export function createSlackApp(pipeline: InvestigationPipeline): App | null {
       text: stripMention(event.text),
       userId,
       channelId: event.channel,
+      workspaceId: event.team,
       threadTs,
       pipeline,
       reply: (message) => typeof message === "string"
