@@ -1,0 +1,13 @@
+__PUBLIC_HOST__ {
+	handle /health {
+		reverse_proxy 127.0.0.1:3000
+	}
+
+	handle /auth/* {
+		reverse_proxy 127.0.0.1:3000
+	}
+
+	handle {
+		respond "Not found" 404
+	}
+}

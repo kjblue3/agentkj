@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { ChatCompletionTool } from "openai/resources/chat/completions";
 import type { AgentToolProvider } from "../agent/toolProvider.js";
+import { stateFilePath } from "../config/state.js";
 import { RemoteMcpClient } from "../connectors/remoteMcpClient.js";
 import type { McpTool } from "../connectors/mcpClient.js";
 import { redactSecrets } from "../security/redaction.js";
@@ -50,7 +51,7 @@ export interface RemoteConnection {
   createdAt: string;
 }
 
-const CONNECTION_STORE_PATH = path.resolve(process.cwd(), "data", "remoteConnections.local.json");
+const CONNECTION_STORE_PATH = stateFilePath("remoteConnections.local.json");
 const pendingConnections = new Map<string, PendingRemoteConnection>();
 const credentialVault = new Map<string, string>();
 const credentialIntents = new Map<string, { connectionId: string; expiresAt: number }>();

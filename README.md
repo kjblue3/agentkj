@@ -61,6 +61,11 @@ The JSON response includes `sourceMode` and `connectors`, so judges can see whet
 Socket Mode means the Slack websocket itself does not need a public tunnel. Set `PUBLIC_BASE_URL`
 only when using GitHub OAuth or the backend connector credential/setup forms.
 
+For a shared demo, run exactly one hosted Socket Mode process. Do not run the same Slack app tokens
+on two laptops: Slack can route events to either websocket while each process has different
+in-memory approvals and credentials. The free Oracle Cloud deployment is documented in
+[deploy/oci/README.md](./deploy/oci/README.md).
+
 ## Optional OpenAI setup
 
 Set `OPENAI_API_KEY` to enable final report polishing. `OPENAI_MODEL` defaults to `gpt-4.1-mini`. Search and ranking remain local, and any API error automatically falls back to deterministic synthesis.
@@ -95,7 +100,7 @@ In Slack, users can:
 - Add `bearer` to approval when the remote service needs a token. The token is entered through `${PUBLIC_BASE_URL}/auth/connectors/...`, never pasted into Slack.
 - Share approved connections with selected users or channels using `@agentkj share <connection-id> user <U...>` or `channel <C...>`. Every tool call rechecks user, channel, allowed tool, provider scope, read-only/read-write mode, and active approval.
 
-Remote connector metadata is stored in `data/remoteConnections.local.json`; bearer credentials are in-memory only for the hackathon prototype.
+Remote connector metadata is stored under `STATE_DIR` (`data/` by default); bearer credentials are in-memory only for the hackathon prototype.
 
 ## Real sandbox demo
 
