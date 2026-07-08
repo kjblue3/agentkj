@@ -63,8 +63,9 @@ The original build pointed at one hardcoded `GITHUB_OWNER`/`GITHUB_DEMO_REPO` vi
 - `src/auth/githubOAuth.ts` registers `GET /auth/github` (redirect to GitHub's OAuth authorize
   screen, `state` = Slack user id) and `GET /auth/github/callback` (exchanges the code for a token,
   fetches the login, stores it).
-- `src/auth/tokenStore.ts` keeps a per-Slack-user token map and persists GitHub tokens to a
-  gitignored local JSON file so development restarts don't disconnect everyone (see tradeoffs below).
+- `src/auth/tokenStore.ts` keeps a per-Slack-user token map and persists GitHub tokens under
+  `STATE_DIR` (`data/` by default) so development restarts don't disconnect everyone (see
+  tradeoffs below).
 - `src/slack/app.ts`'s `/detective` handler looks up the caller's token; if absent, it replies with
   a connect link (`${PUBLIC_BASE_URL}/auth/github?state=<slackUserId>`) instead of investigating.
 - When a token is present, `pipeline.investigate(question, { githubToken, githubLogin, owner?,
@@ -162,6 +163,8 @@ See `.env.example` for the full annotated list. New in the agentic/OAuth/MCP wor
 `LLM_BASE_URL`, `LLM_MODEL`, `AGENT_ENABLED`, `GITHUB_OAUTH_CLIENT_ID`,
 `GITHUB_OAUTH_CLIENT_SECRET`, `PUBLIC_BASE_URL`, `GITHUB_OAUTH_SCOPES`, `MCP_SERVERS`.
 `PUBLIC_BASE_URL` is also used for remote/catalog connector credential forms.
+`HOST` controls the HTTP bind address, and `STATE_DIR` moves hackathon-persistent JSON state outside
+the checkout for hosted deployments.
 `OPENAI_API_KEY`/`OPENAI_MODEL` still work as a back-compat fallback for `LLM_API_KEY`/`LLM_MODEL`.
 
 ## Commands
@@ -174,11 +177,12 @@ See `.env.example` for the full annotated list. New in the agentic/OAuth/MCP wor
 
 ## Known tradeoffs (deliberate, hackathon-scope)
 
-- **Hackathon persistence only**: GitHub tokens and remote connection metadata are stored in
-  gitignored local JSON; catalog connector credentials, remote bearer credentials, pending approval
-  requests, and report cache are in-memory. Remote connections with credential refs are marked
-  inactive after restart because the credential vault is not persisted. No encryption at rest. Fine
-  for a hackathon demo; use a real secret manager/datastore before any real deployment.
+- **Hackathon persistence only**: GitHub tokens and remote connection metadata are stored under
+  `STATE_DIR` (`data/` by default); catalog connector credentials, remote bearer credentials,
+  pending approval requests, and report cache are in-memory. Remote connections with credential
+  refs are marked inactive after restart because the credential vault is not persisted. No
+  encryption at rest. Fine for a hackathon demo; use a real secret manager/datastore before any
+  real deployment.
 - **Classic path never reads commit diffs**: this is intentional — it's the deterministic,
   zero-config fallback, not a second attempt at the same capability the agent has.
 - **Remote connectors are experimental/untrusted**: the prototype validates public URLs and enforces

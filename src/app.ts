@@ -30,10 +30,11 @@ export async function createApplication() {
 
 async function main() {
   const port = Number(process.env.PORT ?? 3000);
+  const host = process.env.HOST?.trim() || "0.0.0.0";
   const { api, slack } = await createApplication();
   const server = createServer(api);
-  server.listen(port, () => {
-    console.log(`Slack Detective API listening on http://localhost:${port}`);
+  server.listen(port, host, () => {
+    console.log(`Slack Detective API listening on http://${host}:${port}`);
     console.log(slack ? "Slack Socket Mode enabled." : "Slack credentials absent; running API-only demo mode.");
   });
   if (slack) await slack.start();

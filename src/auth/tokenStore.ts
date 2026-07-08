@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { stateFilePath } from "../config/state.js";
 
 /**
  * Per-Slack-user credential store, persisted to a gitignored local JSON file so `tsx watch`
@@ -20,7 +21,7 @@ export interface GitHubUserToken {
   expiresAt?: string;
 }
 
-const STORE_PATH = path.resolve(process.cwd(), "data", "userTokens.local.json");
+const STORE_PATH = stateFilePath("userTokens.local.json");
 
 interface PersistedStore {
   githubTokens: Record<string, GitHubUserToken>;
