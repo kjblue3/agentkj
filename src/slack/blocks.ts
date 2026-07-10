@@ -28,14 +28,20 @@ const weakDisplayTokens = new Set([
   "using"
 ]);
 
-const sourceIcon = {
+const sourceIcon: Record<string, string> = {
   slack: "💬",
   github: "🔀",
   jira: "🎫",
   docs: "📄",
   incident: "🚨",
-  web: "🌐"
-} as const;
+  web: "🌐",
+  strava: "🏃"
+};
+
+/** Sources are an open set — any newly connected service renders with the generic icon. */
+function iconFor(source: string): string {
+  return sourceIcon[source] ?? "🔗";
+}
 
 function dateLabel(timestamp: string): string {
   return new Intl.DateTimeFormat("en-US", {
@@ -121,14 +127,45 @@ export function selectDisplayTimeline(report: InvestigationResult): Investigatio
     .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
 }
 
+/**
+ * A no-evidence result renders as a short honest reply, not a report skeleton with "_No evidence
+ * found._" placeholders — the empty board WAS the product failure (junk hits used to pad it).
+ * When the agent named a connectable service that could answer, the reply becomes the connect
+ * prompt, turning a miss into the setup step for answering next time.
+ */
+function buildNoEvidenceBlocks(report: InvestigationResult): SlackBlock[] {
+  return [
+    {
+      type: "section",
+      text: { type: "mrkdwn", text: truncate(report.shortAnswer, 2200) }
+    },
+    ...(report.suggestedConnection
+      ? [{
+          type: "section",
+          text: {
+            type: "mrkdwn",
+            text:
+              `💡 This looks like a *${report.suggestedConnection}* question, and you haven't connected it. ` +
+              `Say \`connect ${report.suggestedConnection}\` and I'll set it up — then ask me again.`
+          }
+        }]
+      : []),
+    {
+      type: "context",
+      elements: [{ type: "mrkdwn", text: `*Case:* ${truncate(report.question, 160)} · no relevant evidence in your connected sources` }]
+    }
+  ] as SlackBlock[];
+}
+
 export function buildReportBlocks(report: InvestigationResult, reportId: string): SlackBlock[] {
+  if (report.evidence.length === 0) return buildNoEvidenceBlocks(report);
   const displayEvidence = selectDisplayEvidence(report);
   const displayTimeline = selectDisplayTimeline(report);
   const timeline = displayTimeline.slice(0, timelinePreviewLimit).map(
     (event) => `• *${dateLabel(event.timestamp)} · ${event.title}*\n${truncate(event.summary, 240)}`
   ).join("\n");
   const evidence = displayEvidence.slice(0, evidencePreviewLimit).map(
-    (item, index) => `${index + 1}. ${sourceIcon[item.source]} <${item.url}|${item.title}>`
+    (item, index) => `${index + 1}. ${iconFor(item.source)} <${item.url}|${item.title}>`
   ).join("\n");
   const nextMoves = report.recommendedActions.slice(0, 3).map((action) => `• ${action}`).join("\n");
 
@@ -198,7 +235,7 @@ export function buildEvidenceBlocks(report: InvestigationResult): SlackBlock[] {
       type: "section",
       text: {
         type: "mrkdwn",
-        text: `*${index + 1}. ${sourceIcon[item.source]} <${item.url}|${item.title}>*\n${truncate(item.body, 700)}`
+        text: `*${index + 1}. ${iconFor(item.source)} <${item.url}|${item.title}>*\n${truncate(item.body, 700)}`
       }
     }, {
       type: "context",

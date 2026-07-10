@@ -11,12 +11,14 @@ import {
 
 vi.mock("../src/auth/tokenStore.js", async () => {
   const userConnectors = new Map<string, Map<string, unknown>>();
+  const githubToken = { token: "gh-token", login: "kjblu", connectedAt: "2026-07-07T00:00:00.000Z" };
   return {
-    getValidGitHubToken: vi.fn(async (slackUserId: string) =>
-      slackUserId === "U123"
-        ? { token: "gh-token", login: "kjblu", connectedAt: "2026-07-07T00:00:00.000Z" }
-        : undefined
-    ),
+    getValidGitHubToken: vi.fn(async (slackUserId: string) => (slackUserId === "U123" ? githubToken : undefined)),
+    getGitHubToken: vi.fn((slackUserId: string) => (slackUserId === "U123" ? githubToken : undefined)),
+    getServiceToken: vi.fn(() => undefined),
+    setServiceToken: vi.fn(),
+    clearServiceToken: vi.fn(),
+    listConnectedServiceIds: vi.fn(() => []),
     listUserConnectors: vi.fn((slackUserId: string) => [...(userConnectors.get(slackUserId)?.values() ?? [])]),
     createUserConnectorCredentialIntent: vi.fn(() => "catalog-secret"),
     setUserConnector: vi.fn((slackUserId: string, connector: unknown) => {
@@ -181,6 +183,12 @@ describe("handleFollowupSubmitAction", () => {
 });
 
 describe("handleSlackIntent", () => {
+  beforeEach(() => {
+    // The GitHub registry row is only connectable when its OAuth app is configured.
+    process.env.GITHUB_OAUTH_CLIENT_ID = "test-client-id";
+    process.env.GITHUB_OAUTH_CLIENT_SECRET = "test-client-secret";
+  });
+
   it("lets app mentions show the GitHub connect link", async () => {
     process.env.PUBLIC_BASE_URL = "https://agentkj.example";
     const reply = vi.fn().mockResolvedValue(undefined);

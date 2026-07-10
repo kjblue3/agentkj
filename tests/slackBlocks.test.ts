@@ -72,6 +72,27 @@ describe("Slack Block Kit rendering", () => {
     expect(text).not.toMatch(/Detective ReportCase|Confidence:\*Short answer|root cause\*Causal/i);
   });
 
+  it("renders a no-evidence result as an honest reply with a connect suggestion, not a report skeleton", () => {
+    const report: InvestigationResult = {
+      question: "How many miles did I run this week?",
+      shortAnswer: "I don't have a source that can answer this — none of your connected sources hold workout data.",
+      confidence: "low",
+      likelyRootCause: "No connected source contains fitness activity.",
+      timeline: [],
+      evidence: [],
+      openQuestions: [],
+      recommendedActions: [],
+      suggestedConnection: "strava"
+    };
+    const blocks = buildReportBlocks(report, "report-miss");
+    const text = allBlockText(blocks);
+
+    expect(text).not.toContain("*Evidence board*");
+    expect(text).not.toContain("*Causal timeline*");
+    expect(text).toContain("I don't have a source that can answer this");
+    expect(text).toContain("connect strava");
+  });
+
   it("keeps checkout evidence board free of Redis and coffee-machine noise", async () => {
     const report = await pipeline.investigate("Why did checkout latency spike?");
     const redis = demoEvidence.find((item) => item.id === "docs-redis-1")!;

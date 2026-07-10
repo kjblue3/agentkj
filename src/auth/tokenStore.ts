@@ -21,10 +21,29 @@ export interface GitHubUserToken {
   expiresAt?: string;
 }
 
+/**
+ * OAuth token for any connected service (strava, notion, ...). Service-agnostic on purpose:
+ * provider-specific response shapes are translated into this once, at the OAuth callback
+ * (see src/services/registry.ts parseTokenResponse), so nothing downstream knows the provider.
+ */
+export interface ServiceToken {
+  token: string;
+  refreshToken?: string;
+  /** ISO timestamp of when `token` stops working; absent means non-expiring. */
+  expiresAt?: string;
+  /** Provider-side account id (e.g. an athlete id) when tools need it for API paths. */
+  accountId?: string;
+  /** Human-readable account name shown in `connectors` listings. */
+  accountLabel?: string;
+  connectedAt: string;
+}
+
 const STORE_PATH = stateFilePath("userTokens.local.json");
 
 interface PersistedStore {
   githubTokens: Record<string, GitHubUserToken>;
+  /** serviceId -> slackUserId -> token. */
+  serviceTokens?: Record<string, Record<string, ServiceToken>>;
 }
 
 function loadStore(): PersistedStore {
@@ -41,13 +60,46 @@ function loadStore(): PersistedStore {
 function saveStore(): void {
   try {
     mkdirSync(path.dirname(STORE_PATH), { recursive: true });
-    writeFileSync(STORE_PATH, JSON.stringify({ githubTokens: Object.fromEntries(githubTokens) }, null, 2));
+    const persistedServiceTokens = Object.fromEntries(
+      [...serviceTokens].map(([serviceId, byUser]) => [serviceId, Object.fromEntries(byUser)])
+    );
+    writeFileSync(
+      STORE_PATH,
+      JSON.stringify({ githubTokens: Object.fromEntries(githubTokens), serviceTokens: persistedServiceTokens }, null, 2)
+    );
   } catch (error) {
     console.warn("Token store write failed; connections won't survive a restart.", error);
   }
 }
 
-const githubTokens = new Map<string, GitHubUserToken>(Object.entries(loadStore().githubTokens));
+const persisted = loadStore();
+const githubTokens = new Map<string, GitHubUserToken>(Object.entries(persisted.githubTokens));
+const serviceTokens = new Map<string, Map<string, ServiceToken>>(
+  Object.entries(persisted.serviceTokens ?? {}).map(([serviceId, byUser]) => [serviceId, new Map(Object.entries(byUser))])
+);
+
+export function setServiceToken(serviceId: string, slackUserId: string, value: ServiceToken): void {
+  const byUser = serviceTokens.get(serviceId) ?? new Map<string, ServiceToken>();
+  byUser.set(slackUserId, value);
+  serviceTokens.set(serviceId, byUser);
+  saveStore();
+}
+
+export function getServiceToken(serviceId: string, slackUserId: string): ServiceToken | undefined {
+  return serviceTokens.get(serviceId)?.get(slackUserId);
+}
+
+export function clearServiceToken(serviceId: string, slackUserId: string): void {
+  serviceTokens.get(serviceId)?.delete(slackUserId);
+  saveStore();
+}
+
+/** Service ids this user has OAuth tokens for (excludes GitHub, which predates this store). */
+export function listConnectedServiceIds(slackUserId: string): string[] {
+  return [...serviceTokens.entries()]
+    .filter(([, byUser]) => byUser.has(slackUserId))
+    .map(([serviceId]) => serviceId);
+}
 
 export function setGitHubToken(slackUserId: string, value: GitHubUserToken): void {
   githubTokens.set(slackUserId, value);

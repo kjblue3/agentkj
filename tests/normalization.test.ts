@@ -15,9 +15,13 @@ describe("evidence normalization", () => {
     expect(item.tags).toEqual([]);
   });
 
-  it("rejects unsupported sources", () => {
+  it("accepts sources it has never seen (services are an open set), but not empty ones", () => {
+    expect(normalizeEvidence({
+      id: "ok", source: "strava", title: "Run", body: "5 mi",
+      url: "https://example.com", timestamp: "2026-01-01T00:00:00.000Z"
+    }).source).toBe("strava");
     expect(() => normalizeEvidence({
-      id: "bad", source: "email", title: "Bad", body: "Bad",
+      id: "bad", source: "", title: "Bad", body: "Bad",
       url: "https://example.com", timestamp: "2026-01-01T00:00:00.000Z"
     })).toThrow();
   });

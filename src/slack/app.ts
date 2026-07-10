@@ -1,15 +1,29 @@
 import { App } from "@slack/bolt";
 import type { Block, KnownBlock } from "@slack/types";
-import { signOAuthState } from "../auth/githubOAuth.js";
+import type OpenAI from "openai";
+import type { AgentToolProvider } from "../agent/toolProvider.js";
+import { getValidServiceToken, serviceConnectUrl } from "../auth/serviceOAuth.js";
 import {
   createUserConnectorCredentialIntent,
+  getGitHubToken,
   getValidGitHubToken,
+  listConnectedServiceIds,
   listUserConnectors,
   setUserConnector
 } from "../auth/tokenStore.js";
 import type { InvestigationPipeline } from "../investigation/pipeline.js";
 import { extractPublicUrl, PublicWebToolProvider } from "../connectors/publicWebTool.js";
+import { createLlmClient, llmModel } from "../llm/client.js";
 import { describeCatalog, findCatalogEntry } from "../mcp/catalog.js";
+import {
+  describeServices,
+  findService,
+  isServiceConnected,
+  resolveService,
+  serviceRegistry,
+  type ServiceDefinition
+} from "../services/registry.js";
+import { classifyIntent } from "./intentRouter.js";
 import {
   approveRemoteConnector,
   AuthorizedConnectionToolProvider,
@@ -58,12 +72,54 @@ function invalidateUserMcpRegistry(slackUserId: string): void {
   userMcpRegistries.delete(slackUserId);
 }
 
-function connectGitHubText(slackUserId: string): string {
-  const base = process.env.PUBLIC_BASE_URL;
-  if (!base) {
-    return "GitHub isn't connected yet, and this deployment hasn't set `PUBLIC_BASE_URL`, so I can't give you a connect link. Ask whoever runs this bot to finish GitHub OAuth setup.";
+/**
+ * Lazily built so it initializes after dotenv has run (this module is imported by tests that
+ * never load an env). Null means no LLM — the intent router degrades to its deterministic parse.
+ */
+let classifierClientMemo: { client: OpenAI | null } | undefined;
+function classifierClient(): OpenAI | null {
+  classifierClientMemo ??= { client: createLlmClient() };
+  return classifierClientMemo.client;
+}
+
+/** Source ids the asking user has access to, for intent classification and relevance routing. */
+function connectedSourceIds(slackUserId: string): string[] {
+  return [
+    // Workspace Slack history is available to every investigation through the shared connector.
+    "slack",
+    ...(getGitHubToken(slackUserId) ? ["github"] : []),
+    ...listConnectedServiceIds(slackUserId),
+    ...listUserConnectors(slackUserId).map((connector) => connector.catalogId)
+  ];
+}
+
+/** Tool providers for every OAuth service this user connected (github's tools are native). */
+async function serviceToolProvidersFor(slackUserId: string): Promise<AgentToolProvider[]> {
+  const providers: AgentToolProvider[] = [];
+  for (const serviceId of listConnectedServiceIds(slackUserId)) {
+    const service = findService(serviceId);
+    if (!service?.createToolProvider) continue;
+    const token = await getValidServiceToken(service, slackUserId);
+    if (token) providers.push(service.createToolProvider(token));
   }
-  return `You haven't connected your GitHub yet. <${base}/auth/github?state=${encodeURIComponent(signOAuthState(slackUserId))}|Connect your GitHub> so I can investigate *your* repos, then run this again.`;
+  return providers;
+}
+
+function serviceConnectText(service: ServiceDefinition, slackUserId: string): string {
+  if (!service.isConfigured(process.env)) {
+    return (
+      `*${service.label}* isn't connectable on this deployment yet — it needs the ${service.label} OAuth app ` +
+      "credentials (and `PUBLIC_BASE_URL`) in the server environment. Ask whoever runs this bot to add them."
+    );
+  }
+  const url = serviceConnectUrl(service, slackUserId);
+  if (!url) {
+    return `*${service.label}* can't hand out a connect link because this deployment has no \`PUBLIC_BASE_URL\`.`;
+  }
+  const already = isServiceConnected(service, slackUserId)
+    ? "You're already connected — reconnecting switches accounts. "
+    : "";
+  return `${already}<${url}|Connect your ${service.label}> — one click, then just ask your question.`;
 }
 
 /** Splits a leading `owner/repo` token off the question text, if present, e.g. "acme/site why is it red" */
@@ -121,9 +177,10 @@ type SlackIntentArgs = {
 };
 
 function usageText(): string {
-  return "Ask me in Slack, e.g. `@agentkj why did checkout latency spike?`\n" +
-    "Paste a public link to read it, or use `@agentkj connect <https://remote-mcp-url>`.\n" +
-    "Other commands: `@agentkj connect github`, `@agentkj connectors`, `@agentkj connect <catalog-id>`.";
+  return "Ask me anything and I'll investigate it across the sources you've connected.\n" +
+    "To connect a source, just say so — e.g. `connect strava`, `connect github` — or paste a remote MCP URL " +
+    "(`connect <https://remote-mcp-url>`).\n" +
+    "Say `connectors` to see what's connected and what's available.";
 }
 
 function objectAt(value: unknown, key: string): Record<string, unknown> | undefined {
@@ -311,48 +368,32 @@ export async function handleSlackIntent({
 }: SlackIntentArgs): Promise<void> {
   const trimmed = text.trim();
 
-  if (!trimmed) {
+  // The LLM decides what this message wants — connect a service, list connectors, run the
+  // bot-issued approve/share commands, or investigate — and, for investigations, which
+  // connected sources are even relevant. No keyword prefixes, no product special-cases.
+  const intent = await classifyIntent(
+    trimmed,
+    { connected: connectedSourceIds(userId), connectableSummary: describeServices() },
+    classifierClient(),
+    llmModel()
+  );
+
+  if (intent.kind === "help") {
     await reply(usageText());
     return;
   }
 
-  // People phrase this every way imaginable — "connect github", "connect to github",
-  // "connect through github", "connect my github account" — so any connect-style message that
-  // names github as its own word routes here instead of losing an exact-match lottery. Remote
-  // MCP URLs still take priority because a pasted hostname may itself contain "github".
-  const connectTokens = trimmed.split(/\s+/);
-  const namesGitHub =
-    /^connect-github$/i.test(connectTokens[0] ?? "") ||
-    connectTokens.slice(1).some((token) => /^github$/i.test(token.replace(/[^a-z0-9]/gi, "")));
-  if (/^connect/i.test(connectTokens[0] ?? "") && namesGitHub && !extractPublicUrl(trimmed)) {
-    await reply({ response_type: "ephemeral", text: connectGitHubText(userId) });
+  if (intent.kind === "list_connectors") {
+    await replyWithConnectorList(userId, reply);
     return;
   }
 
-  if (trimmed === "connectors") {
-    const connected = listUserConnectors(userId);
-    const remote = listConnectionsForOwner(userId);
-    const connectedText = connected.length > 0
-      ? connected.map((c) => `• \`${c.catalogId}\` — connected ${c.connectedAt}`).join("\n")
-      : "_none yet_";
-    const remoteText = remote.length > 0
-      ? remote.map((connection) =>
-          `• \`${connection.id}\` — *${connection.name}* (${connection.scope}, ${connection.accessMode}, ` +
-          `${connection.active ? "active" : "awaiting credential"})\n  ${connection.url}`
-        ).join("\n")
-      : "_none yet_";
-    await reply({
-      response_type: "ephemeral",
-      text:
-        `*Your remote connectors:*\n${remoteText}\n\n*Your catalog connectors:*\n${connectedText}\n\n` +
-        `*Available catalog connectors:*\n${describeCatalog()}\n\n` +
-        "Connect an experimental remote MCP server with `@agentkj connect https://…`, or a vetted one with " +
-        "`@agentkj connect <catalog-id>` to open a secure setup form."
-    });
+  if (intent.kind === "connect") {
+    await handleConnectIntent(intent.target, { userId, workspaceId, channelId }, reply);
     return;
   }
 
-  if (trimmed.startsWith("approve ")) {
+  if (intent.kind === "approve") {
     const [, pendingId, ...flags] = trimmed.split(/\s+/);
     const scope: ConnectionScope = flags.includes("shared") ? "shared" : "personal";
     const accessMode: AccessMode = flags.includes("read-write") ? "read-write" : "read-only";
@@ -393,7 +434,7 @@ export async function handleSlackIntent({
     return;
   }
 
-  if (trimmed.startsWith("share ")) {
+  if (intent.kind === "share") {
     const [, connectionId, targetType, targetId, mode] = trimmed.split(/\s+/);
     if (!["user", "channel"].includes(targetType ?? "") || !targetId) {
       await reply({
@@ -423,104 +464,21 @@ export async function handleSlackIntent({
     return;
   }
 
-  if (trimmed.startsWith("connect ")) {
-    const remoteUrl = extractPublicUrl(trimmed);
-    if (remoteUrl) {
-      try {
-        const pending = await inspectRemoteConnector(remoteUrl, { userId, workspaceId, channelId });
-        const toolLines = pending.tools.length > 0
-          ? pending.tools.map((tool) => {
-              const mode = tool.readOnlyHint ? "read-only" : tool.destructiveHint ? "may write/delete" : "unspecified";
-              const scopes = tool.requiredScopes.length > 0 ? `; scopes: ${tool.requiredScopes.join(", ")}` : "";
-              return `• \`${tool.name}\` — ${mode}${scopes}`;
-            }).join("\n")
-          : "_No tools were advertised._";
-        await reply({
-          response_type: "ephemeral",
-          text:
-            `*Experimental, untrusted remote connector*\n*Name:* ${pending.name}\n*URL:* ${pending.url}\n` +
-            `*Available tools and requested permissions:*\n${toolLines}\n\n` +
-            "Nothing has been enabled. Review it, then explicitly approve with " +
-            `\`@agentkj approve ${pending.id} personal read-only\`. Add \`shared\`, \`read-write\`, or ` +
-            "`bearer` only if you intend those permissions. Never paste a credential into Slack."
-        });
-      } catch (error) {
-        await reply({
-          response_type: "ephemeral",
-          text: error instanceof Error ? error.message : "That remote MCP URL could not be inspected."
-        });
-      }
-      return;
-    }
-
-    // Look for a catalog id anywhere in the message ("connect the filesystem" should work),
-    // stripping punctuation so "connect filesystem!" still matches.
-    const [, ...connectArgs] = trimmed.split(/\s+/);
-    const entry = connectArgs
-      .map((token) => findCatalogEntry(token.replace(/[^a-z0-9-]/gi, "").toLowerCase()))
-      .find(Boolean);
-    if (!entry) {
-      await reply({
-        response_type: "ephemeral",
-        text:
-          "I couldn't tell what to connect from that. Try `@agentkj connect github`, " +
-          "`@agentkj connect <catalog-id>` (see `@agentkj connectors` for the list), or " +
-          "`@agentkj connect <https://remote-mcp-url>`."
-      });
-      return;
-    }
-    if (connectArgs.some((pair) => pair.includes("="))) {
-      await reply({
-        response_type: "ephemeral",
-        text:
-          "I won't collect connector credentials in Slack. Run " +
-          `\`@agentkj connect ${entry.id}\` with no values and I’ll send a secure setup link.`
-      });
-      return;
-    }
-    if (entry.credentialFields.length > 0) {
-      const baseUrl = process.env.PUBLIC_BASE_URL;
-      if (!baseUrl) {
-        await reply({
-          response_type: "ephemeral",
-          text:
-            `\`${entry.id}\` needs secure setup values (${entry.credentialFields.join(", ")}), but this ` +
-            "deployment has no `PUBLIC_BASE_URL` for the setup form."
-        });
-        return;
-      }
-      const secret = createUserConnectorCredentialIntent(userId, entry.id);
-      await reply({
-        response_type: "ephemeral",
-        text:
-          `Open this secure setup form for *${entry.label}* within 15 minutes: ` +
-          `<${baseUrl}/auth/catalog-connectors/${secret}|Connect ${entry.label}>. ` +
-          "Do not paste credentials into Slack."
-      });
-      return;
-    }
-    setUserConnector(userId, {
-      catalogId: entry.id,
-      label: entry.label,
-      credentials: {},
-      connectedAt: new Date().toISOString()
-    });
-    invalidateUserMcpRegistry(userId);
-    await reply({ response_type: "ephemeral", text: `Connected \`${entry.label}\`. The agent can use it on your next question.` });
-    return;
-  }
-
+  // Investigate. Every personal source the user connected contributes tools; the shared env
+  // GitHub fallback is disabled — a person's investigation uses only what THEY connected.
   const publicUrl = extractPublicUrl(trimmed);
   const remoteProvider = new AuthorizedConnectionToolProvider({ userId, workspaceId, channelId });
-  const remoteTools = await remoteProvider.listAgentTools();
-  const githubToken = await getValidGitHubToken(userId);
-  if (!githubToken && !publicUrl && remoteTools.length === 0) {
-    await reply({ response_type: "ephemeral", text: connectGitHubText(userId) });
-    return;
-  }
+  const [remoteTools, githubToken, serviceProviders] = await Promise.all([
+    remoteProvider.listAgentTools(),
+    getValidGitHubToken(userId),
+    serviceToolProvidersFor(userId)
+  ]);
 
   await reply({ response_type: "ephemeral", text: "Pinning the evidence to the board..." });
   const { owner, repo, question } = parseOwnerRepo(trimmed);
+  const connectableServices = serviceRegistry
+    .filter((service) => !isServiceConnected(service, userId))
+    .map((service) => service.id);
   try {
     const report = await pipeline.investigate(question, {
       githubToken: githubToken?.token,
@@ -531,8 +489,12 @@ export async function handleSlackIntent({
       publicUrl,
       toolProviders: [
         ...(publicUrl ? [new PublicWebToolProvider(publicUrl)] : []),
-        ...(remoteTools.length > 0 ? [remoteProvider] : [])
-      ]
+        ...(remoteTools.length > 0 ? [remoteProvider] : []),
+        ...serviceProviders
+      ],
+      relevantSources: intent.kind === "investigate" ? intent.relevantSources : undefined,
+      connectableServices,
+      allowSharedGitHubFallback: false
     });
     const reportId = cacheReport(report);
     await postReport(`Detective Report: ${report.shortAnswer}`, buildReportBlocks(report, reportId));
@@ -543,6 +505,136 @@ export async function handleSlackIntent({
       text: "Something went wrong investigating that. Try rephrasing the question, or ask again in a moment."
     });
   }
+}
+
+async function replyWithConnectorList(userId: string, reply: SlackIntentReply): Promise<void> {
+  const services = serviceRegistry.filter((service) => isServiceConnected(service, userId));
+  const servicesText = services.length > 0
+    ? services.map((service) => `• \`${service.id}\` — ${service.label}`).join("\n")
+    : "_none yet_";
+  const connected = listUserConnectors(userId);
+  const remote = listConnectionsForOwner(userId);
+  const connectedText = connected.length > 0
+    ? connected.map((c) => `• \`${c.catalogId}\` — connected ${c.connectedAt}`).join("\n")
+    : "_none yet_";
+  const remoteText = remote.length > 0
+    ? remote.map((connection) =>
+        `• \`${connection.id}\` — *${connection.name}* (${connection.scope}, ${connection.accessMode}, ` +
+        `${connection.active ? "active" : "awaiting credential"})\n  ${connection.url}`
+      ).join("\n")
+    : "_none yet_";
+  await reply({
+    response_type: "ephemeral",
+    text:
+      `*Your connected services:*\n${servicesText}\n\n*Your remote connectors:*\n${remoteText}\n\n` +
+      `*Your catalog connectors:*\n${connectedText}\n\n` +
+      `*Connectable services:*\n${describeServices()}\n\n` +
+      `*Available catalog connectors:*\n${describeCatalog()}\n\n` +
+      "Connect a service by saying so (`connect strava`), an experimental remote MCP server with " +
+      "`@agentkj connect https://…`, or a vetted one with `@agentkj connect <catalog-id>` to open a secure setup form."
+  });
+}
+
+/**
+ * Connects whatever the router said the user wants: a registry service (one OAuth link), a
+ * vetted catalog connector (secure setup form), or an arbitrary remote MCP URL (the
+ * inspect-then-approve ceremony — that ceremony exists for UNTRUSTED servers only; known
+ * services never go through it).
+ */
+async function handleConnectIntent(
+  target: string,
+  actor: { userId: string; workspaceId: string; channelId: string },
+  reply: SlackIntentReply
+): Promise<void> {
+  const service = resolveService(target);
+  if (service) {
+    await reply({ response_type: "ephemeral", text: serviceConnectText(service, actor.userId) });
+    return;
+  }
+
+  const remoteUrl = extractPublicUrl(target);
+  if (remoteUrl) {
+    try {
+      const pending = await inspectRemoteConnector(remoteUrl, actor);
+      const toolLines = pending.tools.length > 0
+        ? pending.tools.map((tool) => {
+            const mode = tool.readOnlyHint ? "read-only" : tool.destructiveHint ? "may write/delete" : "unspecified";
+            const scopes = tool.requiredScopes.length > 0 ? `; scopes: ${tool.requiredScopes.join(", ")}` : "";
+            return `• \`${tool.name}\` — ${mode}${scopes}`;
+          }).join("\n")
+        : "_No tools were advertised._";
+      await reply({
+        response_type: "ephemeral",
+        text:
+          `*Experimental, untrusted remote connector*\n*Name:* ${pending.name}\n*URL:* ${pending.url}\n` +
+          `*Available tools and requested permissions:*\n${toolLines}\n\n` +
+          "Nothing has been enabled. Review it, then explicitly approve with " +
+          `\`@agentkj approve ${pending.id} personal read-only\`. Add \`shared\`, \`read-write\`, or ` +
+          "`bearer` only if you intend those permissions. Never paste a credential into Slack."
+      });
+    } catch (error) {
+      await reply({
+        response_type: "ephemeral",
+        text: error instanceof Error ? error.message : "That remote MCP URL could not be inspected."
+      });
+    }
+    return;
+  }
+
+  // Look for a catalog id anywhere in the target ("connect the filesystem" should work),
+  // stripping punctuation so "connect filesystem!" still matches.
+  const targetTokens = target.split(/\s+/);
+  const entry = targetTokens
+    .map((token) => findCatalogEntry(token.replace(/[^a-z0-9-]/gi, "").toLowerCase()))
+    .find(Boolean);
+  if (!entry) {
+    await reply({
+      response_type: "ephemeral",
+      text:
+        "I couldn't tell what to connect from that. I can connect these services by name:\n" +
+        `${describeServices()}\n` +
+        "…or `connect <catalog-id>` (see `connectors` for the list), or `connect <https://remote-mcp-url>`."
+    });
+    return;
+  }
+  if (targetTokens.some((pair) => pair.includes("="))) {
+    await reply({
+      response_type: "ephemeral",
+      text:
+        "I won't collect connector credentials in Slack. Run " +
+        `\`@agentkj connect ${entry.id}\` with no values and I’ll send a secure setup link.`
+    });
+    return;
+  }
+  if (entry.credentialFields.length > 0) {
+    const baseUrl = process.env.PUBLIC_BASE_URL;
+    if (!baseUrl) {
+      await reply({
+        response_type: "ephemeral",
+        text:
+          `\`${entry.id}\` needs secure setup values (${entry.credentialFields.join(", ")}), but this ` +
+          "deployment has no `PUBLIC_BASE_URL` for the setup form."
+      });
+      return;
+    }
+    const secret = createUserConnectorCredentialIntent(actor.userId, entry.id);
+    await reply({
+      response_type: "ephemeral",
+      text:
+        `Open this secure setup form for *${entry.label}* within 15 minutes: ` +
+        `<${baseUrl}/auth/catalog-connectors/${secret}|Connect ${entry.label}>. ` +
+        "Do not paste credentials into Slack."
+    });
+    return;
+  }
+  setUserConnector(actor.userId, {
+    catalogId: entry.id,
+    label: entry.label,
+    credentials: {},
+    connectedAt: new Date().toISOString()
+  });
+  invalidateUserMcpRegistry(actor.userId);
+  await reply({ response_type: "ephemeral", text: `Connected \`${entry.label}\`. The agent can use it on your next question.` });
 }
 
 export function createSlackApp(pipeline: InvestigationPipeline): App | null {

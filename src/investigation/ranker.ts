@@ -42,7 +42,7 @@ export function scoreEvidence(
     entityMatches * 2.75 +
     tagMatches * 2.25 +
     recency +
-    sourceBoost[item.source] +
+    (sourceBoost[item.source as keyof typeof sourceBoost] ?? 1) +
     (item.confidence ?? 0.5);
 
   return { item, score: Number(score.toFixed(3)), reasons };

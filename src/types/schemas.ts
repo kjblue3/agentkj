@@ -1,13 +1,11 @@
 import { z } from "zod";
 
-export const evidenceSourceSchema = z.enum([
-  "slack",
-  "github",
-  "jira",
-  "docs",
-  "incident",
-  "web"
-]);
+/**
+ * Open string, not an enum: evidence can come from any service a user connects (strava, notion,
+ * a remote MCP server, ...). Nothing in the core may assume a fixed product list — per-source
+ * behavior (icons, labels) must fall back gracefully for sources it has never seen.
+ */
+export const evidenceSourceSchema = z.string().min(1);
 
 export const evidenceItemSchema = z.object({
   id: z.string().min(1),
@@ -46,7 +44,9 @@ export const investigationResultSchema = z.object({
   timeline: z.array(timelineEventSchema),
   evidence: z.array(evidenceItemSchema),
   openQuestions: z.array(z.string()),
-  recommendedActions: z.array(z.string())
+  recommendedActions: z.array(z.string()),
+  /** Set when no connected source could answer: the service (by id or plain description) that likely could. */
+  suggestedConnection: z.string().optional()
 });
 
 export type EvidenceSource = z.infer<typeof evidenceSourceSchema>;
