@@ -202,6 +202,53 @@ describe("handleSlackIntent", () => {
     }));
   });
 
+  it.each([
+    "connect through github",
+    "connect to my github",
+    "Connect GitHub please",
+    "connect my github account",
+    "connect-github"
+  ])("routes %j to the GitHub connect link", async (text) => {
+    process.env.PUBLIC_BASE_URL = "https://agentkj.example";
+    const reply = vi.fn().mockResolvedValue(undefined);
+
+    await handleSlackIntent({
+      text,
+      userId: "U123",
+      channelId: "C123",
+      threadTs: "1710000000.000000",
+      pipeline: { investigate: vi.fn() } as never,
+      reply,
+      postReport: vi.fn(),
+      source: "mention"
+    });
+
+    expect(reply).toHaveBeenCalledWith(expect.objectContaining({
+      response_type: "ephemeral",
+      text: expect.stringContaining("Connect your GitHub")
+    }));
+  });
+
+  it("explains itself when a connect target is unrecognizable", async () => {
+    const reply = vi.fn().mockResolvedValue(undefined);
+
+    await handleSlackIntent({
+      text: "connect flurbo",
+      userId: "U123",
+      channelId: "C123",
+      threadTs: "1710000000.000000",
+      pipeline: { investigate: vi.fn() } as never,
+      reply,
+      postReport: vi.fn(),
+      source: "mention"
+    });
+
+    expect(reply).toHaveBeenCalledWith(expect.objectContaining({
+      response_type: "ephemeral",
+      text: expect.stringContaining("couldn't tell what to connect")
+    }));
+  });
+
   it("lets app mentions list connectors", async () => {
     setUserConnector("U123", {
       catalogId: "filesystem",
