@@ -25,7 +25,7 @@ import { setGitHubToken } from "./tokenStore.js";
 const STATE_TTL_MS = 30 * 60_000;
 
 /**
- * HMAC key for OAuth `state`, shared by every service's connect flow (GitHub, Strava, ...).
+ * HMAC key for OAuth `state`, shared by every service's connect flow (every service alike).
  * OAUTH_STATE_SECRET decouples state signing from any one provider's credentials; the GitHub
  * client secret remains the fallback so existing deployments keep working unchanged.
  */

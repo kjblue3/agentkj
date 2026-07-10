@@ -15,14 +15,17 @@ import type { InvestigationPipeline } from "../investigation/pipeline.js";
 import { extractPublicUrl, PublicWebToolProvider } from "../connectors/publicWebTool.js";
 import { createLlmClient, llmModel } from "../llm/client.js";
 import { describeCatalog, findCatalogEntry } from "../mcp/catalog.js";
+import { synthesizeService } from "../services/architect.js";
+import { saveDynamicSpec } from "../services/dynamicSpec.js";
 import {
+  allServices,
   describeServices,
   findService,
   isServiceConnected,
   resolveService,
-  serviceRegistry,
   type ServiceDefinition
 } from "../services/registry.js";
+import { createServiceSetupIntent } from "../auth/serviceSetup.js";
 import { classifyIntent } from "./intentRouter.js";
 import {
   approveRemoteConnector,
@@ -106,10 +109,25 @@ async function serviceToolProvidersFor(slackUserId: string): Promise<AgentToolPr
 }
 
 function serviceConnectText(service: ServiceDefinition, slackUserId: string): string {
+  const base = process.env.PUBLIC_BASE_URL;
+  if (!base) {
+    return `*${service.label}* can't hand out links because this deployment has no \`PUBLIC_BASE_URL\`.`;
+  }
   if (!service.isConfigured(process.env)) {
+    // One missing prerequisite: the provider-side OAuth app. The agent walks whoever is asking
+    // through creating it via the secure setup form — never "ask the admin to edit env files".
+    if (service.oauth) {
+      const secret = createServiceSetupIntent(service.id, slackUserId);
+      return (
+        `*${service.label}* needs a one-time setup: its API credentials aren't on this deployment yet. ` +
+        `<${base}/auth/service-setup/${secret}|Set up ${service.label}> — the form has step-by-step instructions ` +
+        "(including the callback URL to register) and shows exactly which hosts the integration talks to. " +
+        "Takes ~2 minutes, then say connect again for your personal link. Never paste credentials into Slack."
+      );
+    }
     return (
-      `*${service.label}* isn't connectable on this deployment yet — it needs the ${service.label} OAuth app ` +
-      "credentials (and `PUBLIC_BASE_URL`) in the server environment. Ask whoever runs this bot to add them."
+      `*${service.label}* isn't connectable on this deployment yet — its app credentials are missing from the ` +
+      "server environment. Ask whoever runs this bot to add them."
     );
   }
   const url = serviceConnectUrl(service, slackUserId);
@@ -178,8 +196,8 @@ type SlackIntentArgs = {
 
 function usageText(): string {
   return "Ask me anything and I'll investigate it across the sources you've connected.\n" +
-    "To connect a source, just say so — e.g. `connect strava`, `connect github` — or paste a remote MCP URL " +
-    "(`connect <https://remote-mcp-url>`).\n" +
+    "To connect a source, just name it — `connect <any service>` — and if I don't have an integration yet, " +
+    "I'll build one on the spot. Remote MCP URLs work too (`connect <https://remote-mcp-url>`).\n" +
     "Say `connectors` to see what's connected and what's available.";
 }
 
@@ -476,7 +494,7 @@ export async function handleSlackIntent({
 
   await reply({ response_type: "ephemeral", text: "Pinning the evidence to the board..." });
   const { owner, repo, question } = parseOwnerRepo(trimmed);
-  const connectableServices = serviceRegistry
+  const connectableServices = allServices()
     .filter((service) => !isServiceConnected(service, userId))
     .map((service) => service.id);
   try {
@@ -508,7 +526,7 @@ export async function handleSlackIntent({
 }
 
 async function replyWithConnectorList(userId: string, reply: SlackIntentReply): Promise<void> {
-  const services = serviceRegistry.filter((service) => isServiceConnected(service, userId));
+  const services = allServices().filter((service) => isServiceConnected(service, userId));
   const servicesText = services.length > 0
     ? services.map((service) => `• \`${service.id}\` — ${service.label}`).join("\n")
     : "_none yet_";
@@ -530,8 +548,9 @@ async function replyWithConnectorList(userId: string, reply: SlackIntentReply): 
       `*Your catalog connectors:*\n${connectedText}\n\n` +
       `*Connectable services:*\n${describeServices()}\n\n` +
       `*Available catalog connectors:*\n${describeCatalog()}\n\n` +
-      "Connect a service by saying so (`connect strava`), an experimental remote MCP server with " +
-      "`@agentkj connect https://…`, or a vetted one with `@agentkj connect <catalog-id>` to open a secure setup form."
+      "Connect a service by naming it (`connect <any service>` — I'll build missing integrations myself), " +
+      "an experimental remote MCP server with `@agentkj connect https://…`, or a vetted one with " +
+      "`@agentkj connect <catalog-id>` to open a secure setup form."
   });
 }
 
@@ -588,12 +607,46 @@ async function handleConnectIntent(
     .map((token) => findCatalogEntry(token.replace(/[^a-z0-9-]/gi, "").toLowerCase()))
     .find(Boolean);
   if (!entry) {
+    // Unknown service: the agent builds the integration itself. The architect drafts OAuth
+    // endpoints + read-only tools from model knowledge, validation pins it to declared hosts,
+    // and the setup form (which discloses those hosts) is the human approval that arms it.
+    await reply({
+      response_type: "ephemeral",
+      text: `I don't have a *${target}* integration yet — give me a moment to build one…`
+    });
+    const client = classifierClient();
+    if (!client) {
+      await reply({
+        response_type: "ephemeral",
+        text:
+          "I can't synthesize new integrations right now (no language model is configured). " +
+          "You can still paste a remote MCP URL with `connect <https://…>`."
+      });
+      return;
+    }
+    const result = await synthesizeService(target, client, llmModel());
+    if ("error" in result) {
+      await reply({
+        response_type: "ephemeral",
+        text:
+          `I couldn't build a *${target}* integration: ${result.error}\n` +
+          `Here's what I can connect by name today:\n${describeServices()}\n` +
+          "…or paste a remote MCP URL with `connect <https://…>`."
+      });
+      return;
+    }
+    saveDynamicSpec(result.spec);
+    const service = findService(result.spec.id);
+    if (!service) {
+      await reply({ response_type: "ephemeral", text: "I built the integration but couldn't load it back — try again." });
+      return;
+    }
+    const hosts = result.spec.apiHosts.map((host) => `\`${host}\``).join(", ");
     await reply({
       response_type: "ephemeral",
       text:
-        "I couldn't tell what to connect from that. I can connect these services by name:\n" +
-        `${describeServices()}\n` +
-        "…or `connect <catalog-id>` (see `connectors` for the list), or `connect <https://remote-mcp-url>`."
+        `Built a *${service.label}* integration: ${result.spec.tools.length} read-only tool${result.spec.tools.length === 1 ? "" : "s"}, ` +
+        `talking only to ${hosts}.\n${serviceConnectText(service, actor.userId)}`
     });
     return;
   }

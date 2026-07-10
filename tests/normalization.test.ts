@@ -17,9 +17,9 @@ describe("evidence normalization", () => {
 
   it("accepts sources it has never seen (services are an open set), but not empty ones", () => {
     expect(normalizeEvidence({
-      id: "ok", source: "strava", title: "Run", body: "5 mi",
+      id: "ok", source: "acmefit", title: "Run", body: "5 mi",
       url: "https://example.com", timestamp: "2026-01-01T00:00:00.000Z"
-    }).source).toBe("strava");
+    }).source).toBe("acmefit");
     expect(() => normalizeEvidence({
       id: "bad", source: "", title: "Bad", body: "Bad",
       url: "https://example.com", timestamp: "2026-01-01T00:00:00.000Z"

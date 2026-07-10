@@ -1,5 +1,5 @@
 import type { Express } from "express";
-import { findService, type ServiceDefinition } from "../services/registry.js";
+import { findService, oauthClientCreds, type ServiceDefinition } from "../services/registry.js";
 import { signOAuthState, verifyOAuthState } from "./githubOAuth.js";
 import { clearServiceToken, getServiceToken, setServiceToken, type ServiceToken } from "./tokenStore.js";
 
@@ -27,9 +27,10 @@ async function exchangeToken(
   env: NodeJS.ProcessEnv
 ): Promise<Omit<ServiceToken, "connectedAt"> | null> {
   const oauth = service.oauth!;
+  const creds = oauthClientCreds(service, env);
   const body = new URLSearchParams({
-    client_id: env[oauth.clientIdEnv] ?? "",
-    client_secret: env[oauth.clientSecretEnv] ?? "",
+    client_id: creds?.clientId ?? "",
+    client_secret: creds?.clientSecret ?? "",
     ...params
   });
   const response = await fetch(oauth.tokenUrl, {
@@ -75,7 +76,9 @@ export async function getValidServiceToken(
     const merged: ServiceToken = {
       ...record,
       ...refreshed,
-      // Refresh responses usually omit account identity; keep what the original connect stored.
+      // Refresh responses usually omit account identity — and some providers omit the refresh
+      // token itself on refresh grants; keep what the original connect stored in both cases.
+      refreshToken: refreshed.refreshToken ?? record.refreshToken,
       accountId: refreshed.accountId ?? record.accountId,
       accountLabel: refreshed.accountLabel ?? record.accountLabel
     };
@@ -102,7 +105,7 @@ export function registerServiceOAuthRoutes(app: Express, env: NodeJS.ProcessEnv 
       return;
     }
     const authorizeUrl = new URL(service.oauth.authorizeUrl);
-    authorizeUrl.searchParams.set("client_id", env[service.oauth.clientIdEnv] ?? "");
+    authorizeUrl.searchParams.set("client_id", oauthClientCreds(service, env)?.clientId ?? "");
     authorizeUrl.searchParams.set("redirect_uri", `${baseUrl}/auth/services/${service.id}/callback`);
     authorizeUrl.searchParams.set("response_type", "code");
     if (service.oauth.scope) authorizeUrl.searchParams.set("scope", service.oauth.scope);

@@ -82,7 +82,7 @@ describe("Slack Block Kit rendering", () => {
       evidence: [],
       openQuestions: [],
       recommendedActions: [],
-      suggestedConnection: "strava"
+      suggestedConnection: "acmefit"
     };
     const blocks = buildReportBlocks(report, "report-miss");
     const text = allBlockText(blocks);
@@ -90,7 +90,7 @@ describe("Slack Block Kit rendering", () => {
     expect(text).not.toContain("*Evidence board*");
     expect(text).not.toContain("*Causal timeline*");
     expect(text).toContain("I don't have a source that can answer this");
-    expect(text).toContain("connect strava");
+    expect(text).toContain("connect acmefit");
   });
 
   it("keeps checkout evidence board free of Redis and coffee-machine noise", async () => {

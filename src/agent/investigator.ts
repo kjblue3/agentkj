@@ -86,7 +86,7 @@ export interface AgentContext {
   /** Part 3 hook: dispatch for any tool name not recognized natively (routed to the MCP registry). */
   externalCall?: (name: string, args: Record<string, unknown>) => Promise<unknown>;
   /**
-   * Source ids (github, slack, strava, ...) the intent router judged plausibly relevant to THIS
+   * Source ids (github, slack, ...) the intent router judged plausibly relevant to THIS
    * question. Undefined = no signal (don't gate). Gates the scout pre-scan and steers the model;
    * tools stay available so the model can still recover from a wrong routing call.
    */
@@ -318,9 +318,10 @@ export class AgentInvestigator {
         : collected;
     const timeline = buildTimeline(evidenceList);
 
-    // Only surface suggestions that map to a service the user can actually connect here.
+    // The user can connect ANYTHING (unknown services get synthesized on demand), so any
+    // plausible product-ish name is a valid suggestion — sanitized so report text stays clean.
     const suggested = draft.suggestedConnection?.trim().toLowerCase();
-    const suggestedConnection = suggested && ctx.connectableServices?.includes(suggested) ? suggested : undefined;
+    const suggestedConnection = suggested && /^[a-z0-9][a-z0-9 .-]{1,29}$/.test(suggested) ? suggested : undefined;
 
     return investigationResultSchema.parse({
       question,
@@ -479,7 +480,8 @@ export class AgentInvestigator {
     }
     if (ctx.connectableServices && ctx.connectableServices.length > 0) {
       lines.push(
-        `Services the user has NOT connected but could (valid \`suggestedConnection\` values): ${ctx.connectableServices.join(", ")}.`
+        `Services the user has NOT connected but could: ${ctx.connectableServices.join(", ")}. ` +
+          "Any other well-known product's name is also a valid `suggestedConnection` — the user can connect anything."
       );
     }
     if (ctx.login) lines.push(`Connected GitHub account — this is the person asking: ${ctx.login}.`);
@@ -599,7 +601,7 @@ export class AgentInvestigator {
             suggestedConnection: {
               type: "string",
               description:
-                "Only when no connected source could answer: the id of a not-yet-connected service (from the scope context list) that likely holds the answer."
+                "Only when no connected source could answer: the name of a service (a not-yet-connected id from the scope context, or any well-known product) that likely holds the answer."
             },
             openQuestions: { type: "array", items: { type: "string" } },
             recommendedActions: { type: "array", items: { type: "string" } }

@@ -2,7 +2,7 @@ import type OpenAI from "openai";
 
 /**
  * Decides what an incoming Slack message wants — with the LLM, not keyword prefixes. Users say
- * "hey can you hook up my strava?" or paste a link to their account page; none of that survives
+ * "hey can you hook up my <service>?" or paste a link to their account page; none of that survives
  * string matching. The classifier sees the user's connected/connectable sources so it can also
  * mark which connected sources are plausibly relevant to a question (the investigation then
  * never rummages through an unrelated source, e.g. GitHub for a workout question).
@@ -28,7 +28,7 @@ export type SlackIntent =
   | { kind: "help" };
 
 export interface IntentContext {
-  /** Source ids the user already connected (e.g. ["github", "strava", "filesystem"]). */
+  /** Source ids the user already connected (e.g. ["github", "filesystem"]). */
   connected: string[];
   /** One-line-per-service description of what is connectable, for the prompt. */
   connectableSummary: string;
@@ -39,7 +39,7 @@ const CLASSIFIER_SYSTEM_PROMPT = `You route one Slack message sent to an investi
 
 Rules, in priority order:
 1. "approve <id> ..." and "share <id> ..." are literal bot-issued commands — return those kinds only for messages that start with those words followed by an id.
-2. "connect": the user wants to link/hook up/add a service, account, data source, or MCP server — in ANY phrasing ("can you connect strava", "add my notion", "hook this up: https://..."). Also choose connect when the message is essentially just a link to the user's own account/profile/dashboard on a service that requires login (a fitness profile, a SaaS workspace) — pasting it means they want that service's data. Set "target" to the service name or the URL, exactly as the user referenced it.
+2. "connect": the user wants to link/hook up/add a service, account, data source, or MCP server — in ANY phrasing ("can you connect <name>", "add my <name> account", "hook this up: https://..."). Also choose connect when the message is essentially just a link to the user's own account/profile/dashboard on a service that requires login (a fitness profile, a SaaS workspace) — pasting it means they want that service's data. Set "target" to the service name or the URL, exactly as the user referenced it.
 3. "list_connectors": asking what is connected or available to connect.
 4. "help": empty greetings, "what can you do".
 5. Everything else is "investigate": a question or task to research. Set "relevantSources" to the subset of the user's CONNECTED sources that could plausibly contain the answer, judged by each source's data domain — include a source only if the question's subject matter matches it; return [] when none fit. A plain public article link to read counts as investigate, not connect.
@@ -68,7 +68,7 @@ export function heuristicIntent(text: string): SlackIntent {
   if (/^approve$/i.test(head ?? "") && rest.length > 0) return { kind: "approve" };
   if (/^share$/i.test(head ?? "") && rest.length > 0) return { kind: "share" };
   if (/^connect/i.test(head ?? "")) {
-    // "connect github", "connect-github", "connect to my strava" — target is everything after
+    // "connect github", "connect-github", "connect to my <service>" — target is everything after
     // the verb (or the verb's own suffix for the hyphenated form).
     const inline = head!.replace(/^connect[-:]?/i, "");
     const target = [inline, ...rest].filter(Boolean).join(" ").trim();

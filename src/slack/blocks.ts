@@ -34,8 +34,7 @@ const sourceIcon: Record<string, string> = {
   jira: "🎫",
   docs: "📄",
   incident: "🚨",
-  web: "🌐",
-  strava: "🏃"
+  web: "🌐"
 };
 
 /** Sources are an open set — any newly connected service renders with the generic icon. */

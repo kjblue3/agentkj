@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 /**
- * Open string, not an enum: evidence can come from any service a user connects (strava, notion,
+ * Open string, not an enum: evidence can come from any service a user connects (any service,
  * a remote MCP server, ...). Nothing in the core may assume a fixed product list — per-source
  * behavior (icons, labels) must fall back gracefully for sources it has never seen.
  */
