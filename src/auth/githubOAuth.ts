@@ -24,9 +24,17 @@ import { setGitHubToken } from "./tokenStore.js";
 
 const STATE_TTL_MS = 30 * 60_000;
 
-/** HMAC key: the OAuth client secret is required for this flow anyway and never leaves the server. */
+/**
+ * HMAC key for OAuth `state`, shared by every service's connect flow (GitHub, Strava, ...).
+ * OAUTH_STATE_SECRET decouples state signing from any one provider's credentials; the GitHub
+ * client secret remains the fallback so existing deployments keep working unchanged.
+ */
+function stateSecret(env: NodeJS.ProcessEnv): string | undefined {
+  return env.OAUTH_STATE_SECRET || env.GITHUB_OAUTH_CLIENT_SECRET;
+}
+
 export function signOAuthState(slackUserId: string, env: NodeJS.ProcessEnv = process.env): string {
-  const secret = env.GITHUB_OAUTH_CLIENT_SECRET;
+  const secret = stateSecret(env);
   if (!secret) return slackUserId; // Without the secret the OAuth routes are disabled; nothing consumes this.
   const payload = `${slackUserId}.${Date.now() + STATE_TTL_MS}`;
   const signature = createHmac("sha256", secret).update(payload).digest("base64url");
@@ -35,7 +43,7 @@ export function signOAuthState(slackUserId: string, env: NodeJS.ProcessEnv = pro
 
 /** Returns the Slack user id if the state is authentic and unexpired, else null. */
 export function verifyOAuthState(state: string, env: NodeJS.ProcessEnv = process.env): string | null {
-  const secret = env.GITHUB_OAUTH_CLIENT_SECRET;
+  const secret = stateSecret(env);
   const [slackUserId, expires, signature] = state.split(".");
   if (!secret || !slackUserId || !expires || !signature) return null;
   const expected = createHmac("sha256", secret).update(`${slackUserId}.${expires}`).digest("base64url");

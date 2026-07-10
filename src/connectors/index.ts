@@ -38,8 +38,8 @@ export function createConnectors(
 }
 
 function createLocalConnectors(items: EvidenceItem[]): EvidenceConnector[] {
-  return (Object.keys(labels) as EvidenceSource[]).map(
-    (source) => new LocalConnector(labels[source], source, items)
+  return Object.entries(labels).map(
+    ([source, label]) => new LocalConnector(label, source, items)
   );
 }
 

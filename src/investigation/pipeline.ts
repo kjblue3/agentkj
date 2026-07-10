@@ -30,6 +30,17 @@ export interface InvestigateOptions {
   toolProviders?: AgentToolProvider[];
   /** Public link attached to this request; used for deterministic fallback when no agent LLM exists. */
   publicUrl?: string;
+  /** Source ids the intent router judged relevant to this question (see AgentContext.relevantSources). */
+  relevantSources?: string[];
+  /** Not-yet-connected service ids the agent may propose in `suggestedConnection`. */
+  connectableServices?: string[];
+  /**
+   * Whether a missing per-user GitHub token may fall back to the deployment's shared
+   * GITHUB_TOKEN env. True for the anonymous HTTP API (its demo contract); Slack requests pass
+   * false — a person's investigation uses only what THEY connected. GitHub was scaffolding to
+   * prove the loop, never the default source for every question.
+   */
+  allowSharedGitHubFallback?: boolean;
 }
 
 /**
@@ -75,7 +86,9 @@ export class InvestigationPipeline {
   }
 
   private async tryAgentInvestigate(question: string, opts: InvestigateOptions): Promise<InvestigationResult | null> {
-    const githubToken = opts.githubToken ?? process.env.GITHUB_TOKEN ?? process.env.GITHUB_PERSONAL_ACCESS_TOKEN;
+    const sharedFallback = opts.allowSharedGitHubFallback ?? true;
+    const githubToken = opts.githubToken
+      ?? (sharedFallback ? process.env.GITHUB_TOKEN ?? process.env.GITHUB_PERSONAL_ACCESS_TOKEN : undefined);
     const github = githubToken ? new GitHubRest(githubToken) : undefined;
     // A per-user token with no fixed owner/repo means "search across everything this user can
     // access" (scoped by `login` inside the agent) rather than one hardcoded demo repo.
@@ -97,7 +110,9 @@ export class InvestigationPipeline {
       repo,
       login: opts.githubLogin,
       externalTools: externalTools.length > 0 ? externalTools : undefined,
-      externalCall
+      externalCall,
+      relevantSources: opts.relevantSources,
+      connectableServices: opts.connectableServices
     };
 
     if (!ctx.github && !ctx.slack && !ctx.externalTools) return null;
