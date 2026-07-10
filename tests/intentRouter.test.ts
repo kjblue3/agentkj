@@ -1,11 +1,48 @@
-import { describe, expect, it } from "vitest";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { beforeAll, describe, expect, it } from "vitest";
 import { classifyIntent, heuristicIntent } from "../src/slack/intentRouter.js";
-import { resolveService } from "../src/services/registry.js";
+
+// Point STATE_DIR at a temp dir BEFORE importing the registry, and seed one synthesized
+// integration (a fictional service) so resolution over dynamic specs is what's under test.
+const stateDir = mkdtempSync(path.join(tmpdir(), "agentkj-intent-"));
+process.env.STATE_DIR = stateDir;
+const { resolveService } = await import("../src/services/registry.js");
+
+const fictionalSpec = {
+  id: "acmefit",
+  label: "AcmeFit",
+  aliases: ["acmefit", "acme fit", "acmefit.example"],
+  domain: "the user's own workouts, distances, and training stats",
+  homepage: "https://acmefit.example",
+  apiHosts: ["acmefit.example", "api.acmefit.example"],
+  oauth: {
+    authorizeUrl: "https://acmefit.example/oauth/authorize",
+    tokenUrl: "https://acmefit.example/oauth/token",
+    scope: "read",
+    extraAuthParams: {}
+  },
+  setupInstructions: "Create an API application in the AcmeFit developer settings and register {CALLBACK_URL}.",
+  tools: [
+    {
+      name: "list_workouts",
+      description: "List the connected user's recent workouts with distances.",
+      method: "GET",
+      urlTemplate: "https://api.acmefit.example/v1/workouts",
+      params: []
+    }
+  ]
+};
+
+beforeAll(() => {
+  writeFileSync(path.join(stateDir, "dynamicServices.local.json"), JSON.stringify({ acmefit: fictionalSpec }));
+});
 
 describe("heuristicIntent (no-LLM fallback)", () => {
   it("routes connect phrasings to connect with the remainder as target", () => {
     expect(heuristicIntent("connect github")).toEqual({ kind: "connect", target: "github" });
-    expect(heuristicIntent("connect to my strava")).toEqual({ kind: "connect", target: "to my strava" });
+    expect(heuristicIntent("connect to my acmefit")).toEqual({ kind: "connect", target: "to my acmefit" });
     expect(heuristicIntent("connect-github")).toEqual({ kind: "connect", target: "github" });
   });
 
@@ -24,12 +61,12 @@ describe("heuristicIntent (no-LLM fallback)", () => {
 describe("classifyIntent", () => {
   it("uses the heuristic when no LLM client is configured", async () => {
     const intent = await classifyIntent(
-      "connect strava",
+      "connect acmefit",
       { connected: ["slack"], connectableSummary: "" },
       null,
       "test-model"
     );
-    expect(intent).toEqual({ kind: "connect", target: "strava" });
+    expect(intent).toEqual({ kind: "connect", target: "acmefit" });
   });
 
   it("drops relevantSources ids the user has not actually connected", async () => {
@@ -37,18 +74,18 @@ describe("classifyIntent", () => {
       chat: {
         completions: {
           create: async () => ({
-            choices: [{ message: { content: JSON.stringify({ kind: "investigate", relevantSources: ["strava", "github"] }) } }]
+            choices: [{ message: { content: JSON.stringify({ kind: "investigate", relevantSources: ["acmefit", "github"] }) } }]
           })
         }
       }
     };
     const intent = await classifyIntent(
       "how many miles did I run this week?",
-      { connected: ["strava", "slack"], connectableSummary: "" },
+      { connected: ["acmefit", "slack"], connectableSummary: "" },
       client as never,
       "test-model"
     );
-    expect(intent).toEqual({ kind: "investigate", relevantSources: ["strava"] });
+    expect(intent).toEqual({ kind: "investigate", relevantSources: ["acmefit"] });
   });
 
   it("falls back to the heuristic when the LLM call fails", async () => {
@@ -65,15 +102,15 @@ describe("classifyIntent", () => {
   });
 });
 
-describe("resolveService", () => {
-  it("matches service names in any surrounding phrasing", () => {
+describe("resolveService (over synthesized integrations)", () => {
+  it("matches service names in any surrounding phrasing, including multi-word aliases", () => {
     expect(resolveService("through github")?.id).toBe("github");
-    expect(resolveService("my strava account")?.id).toBe("strava");
+    expect(resolveService("my acme fit account")?.id).toBe("acmefit");
   });
 
-  it("matches pasted URLs by hostname", () => {
-    expect(resolveService("https://www.strava.com/athletes/113555702#interval")?.id).toBe("strava");
-    expect(resolveService("https://remote-mcp.example/mcp")).toBeUndefined();
+  it("matches pasted URLs by hostname only", () => {
+    expect(resolveService("https://acmefit.example/athletes/12345#week")?.id).toBe("acmefit");
+    expect(resolveService("https://remote-mcp.example/acmefit-in-the-path")).toBeUndefined();
   });
 
   it("matches nothing for unknown services", () => {

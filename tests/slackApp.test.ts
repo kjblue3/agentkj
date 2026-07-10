@@ -237,7 +237,7 @@ describe("handleSlackIntent", () => {
     }));
   });
 
-  it("explains itself when a connect target is unrecognizable", async () => {
+  it("tries to synthesize an integration for an unknown connect target", async () => {
     const reply = vi.fn().mockResolvedValue(undefined);
 
     await handleSlackIntent({
@@ -253,7 +253,12 @@ describe("handleSlackIntent", () => {
 
     expect(reply).toHaveBeenCalledWith(expect.objectContaining({
       response_type: "ephemeral",
-      text: expect.stringContaining("couldn't tell what to connect")
+      text: expect.stringContaining("give me a moment to build one")
+    }));
+    // No LLM is configured in tests, so the architect step reports that honestly.
+    expect(reply).toHaveBeenCalledWith(expect.objectContaining({
+      response_type: "ephemeral",
+      text: expect.stringContaining("can't synthesize new integrations right now")
     }));
   });
 

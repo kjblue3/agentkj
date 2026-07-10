@@ -22,7 +22,7 @@ export interface GitHubUserToken {
 }
 
 /**
- * OAuth token for any connected service (strava, notion, ...). Service-agnostic on purpose:
+ * OAuth token for any connected service (any service). Service-agnostic on purpose:
  * provider-specific response shapes are translated into this once, at the OAuth callback
  * (see src/services/registry.ts parseTokenResponse), so nothing downstream knows the provider.
  */
