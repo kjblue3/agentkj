@@ -316,7 +316,15 @@ export async function handleSlackIntent({
     return;
   }
 
-  if (trimmed === "connect github" || trimmed === "connect-github") {
+  // People phrase this every way imaginable — "connect github", "connect to github",
+  // "connect through github", "connect my github account" — so any connect-style message that
+  // names github as its own word routes here instead of losing an exact-match lottery. Remote
+  // MCP URLs still take priority because a pasted hostname may itself contain "github".
+  const connectTokens = trimmed.split(/\s+/);
+  const namesGitHub =
+    /^connect-github$/i.test(connectTokens[0] ?? "") ||
+    connectTokens.slice(1).some((token) => /^github$/i.test(token.replace(/[^a-z0-9]/gi, "")));
+  if (/^connect/i.test(connectTokens[0] ?? "") && namesGitHub && !extractPublicUrl(trimmed)) {
     await reply({ response_type: "ephemeral", text: connectGitHubText(userId) });
     return;
   }
@@ -445,16 +453,23 @@ export async function handleSlackIntent({
       return;
     }
 
-    const [, catalogId, ...pairs] = trimmed.split(/\s+/);
-    const entry = catalogId ? findCatalogEntry(catalogId) : undefined;
+    // Look for a catalog id anywhere in the message ("connect the filesystem" should work),
+    // stripping punctuation so "connect filesystem!" still matches.
+    const [, ...connectArgs] = trimmed.split(/\s+/);
+    const entry = connectArgs
+      .map((token) => findCatalogEntry(token.replace(/[^a-z0-9-]/gi, "").toLowerCase()))
+      .find(Boolean);
     if (!entry) {
       await reply({
         response_type: "ephemeral",
-        text: `Unknown connector \`${catalogId}\`. See \`@agentkj connectors\` for the list.`
+        text:
+          "I couldn't tell what to connect from that. Try `@agentkj connect github`, " +
+          "`@agentkj connect <catalog-id>` (see `@agentkj connectors` for the list), or " +
+          "`@agentkj connect <https://remote-mcp-url>`."
       });
       return;
     }
-    if (pairs.some((pair) => pair.includes("="))) {
+    if (connectArgs.some((pair) => pair.includes("="))) {
       await reply({
         response_type: "ephemeral",
         text:
