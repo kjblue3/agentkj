@@ -1,7 +1,5 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import path from "node:path";
 import { z } from "zod";
-import { stateFilePath } from "../config/state.js";
+import { listServiceSpecs, saveServiceSpec } from "../state/repositories.js";
 
 /**
  * A service integration synthesized by the agent at runtime (src/services/architect.ts) —
@@ -90,21 +88,10 @@ export const dynamicServiceSpecSchema = z
 export type DynamicServiceSpec = z.infer<typeof dynamicServiceSpecSchema>;
 export type DynamicTool = z.infer<typeof dynamicToolSchema>;
 
-const STORE_PATH = stateFilePath("dynamicServices.local.json");
-
-function loadRaw(): Record<string, unknown> {
-  try {
-    if (existsSync(STORE_PATH)) return JSON.parse(readFileSync(STORE_PATH, "utf8")) as Record<string, unknown>;
-  } catch (error) {
-    console.warn("Dynamic service store unreadable; starting empty.", error);
-  }
-  return {};
-}
-
 /** Re-validated on every load so a hand-edited or corrupted store entry can never execute. */
 export function loadDynamicSpecs(): DynamicServiceSpec[] {
   const specs: DynamicServiceSpec[] = [];
-  for (const raw of Object.values(loadRaw())) {
+  for (const raw of listServiceSpecs()) {
     const parsed = dynamicServiceSpecSchema.safeParse(raw);
     if (parsed.success) specs.push(parsed.data);
     else console.warn("Dropping invalid dynamic service spec from store.", parsed.error.issues[0]?.message);
@@ -113,14 +100,7 @@ export function loadDynamicSpecs(): DynamicServiceSpec[] {
 }
 
 export function saveDynamicSpec(spec: DynamicServiceSpec): void {
-  const all = loadRaw();
-  all[spec.id] = spec;
-  try {
-    mkdirSync(path.dirname(STORE_PATH), { recursive: true });
-    writeFileSync(STORE_PATH, JSON.stringify(all, null, 2));
-  } catch (error) {
-    console.warn("Dynamic service store write failed; the integration won't survive a restart.", error);
-  }
+  saveServiceSpec(dynamicServiceSpecSchema.parse(spec));
 }
 
 /** Reads a dot-path ("athlete.id") out of a JSON payload; returns a string or undefined. */

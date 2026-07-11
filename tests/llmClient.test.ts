@@ -55,7 +55,7 @@ describe("roundRobinClient", () => {
     const second = fakeClient(async () => { throw rateLimit(10); });
     const pool = roundRobinClient([first.client, second.client]);
 
-    await expect(pool.chat.completions.create({} as never)).rejects.toMatchObject({ status: 429 });
+    await expect(pool.chat.completions.create({} as never)).rejects.toMatchObject({ name: "LlmCapacityExhausted", attemptedKeyCount: 2 });
     expect(first.create).toHaveBeenCalledTimes(1);
     expect(second.create).toHaveBeenCalledTimes(1);
   });
@@ -72,7 +72,7 @@ describe("roundRobinClient", () => {
 
 describe("rateLimitWaitMs", () => {
   it("reads the reset from the message and returns null for non-429s", () => {
-    expect(rateLimitWaitMs(rateLimit(5))).toBe(6000);
+    expect(rateLimitWaitMs(rateLimit(5))).toBe(5250);
     expect(rateLimitWaitMs(new Error("boom"))).toBeNull();
   });
 });

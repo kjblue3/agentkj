@@ -1,9 +1,7 @@
-import { randomBytes, randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import path from "node:path";
+import { randomBytes } from "node:crypto";
 import type { ChatCompletionTool } from "openai/resources/chat/completions";
 import type { AgentToolProvider } from "../agent/toolProvider.js";
-import { stateFilePath } from "../config/state.js";
+import { decryptSecret, encryptSecret, stateDatabase } from "../state/database.js";
 import { RemoteMcpClient } from "../connectors/remoteMcpClient.js";
 import type { McpTool } from "../connectors/mcpClient.js";
 import { redactSecrets } from "../security/redaction.js";
@@ -56,9 +54,7 @@ export interface RemoteConnection {
   createdAt: string;
 }
 
-const CONNECTION_STORE_PATH = stateFilePath("remoteConnections.local.json");
 const pendingConnections = new Map<string, PendingRemoteConnection>();
-const credentialVault = new Map<string, string>();
 const credentialIntents = new Map<string, { connectionId: string; expiresAt: number }>();
 const connections = new Map<string, RemoteConnection>(
   loadConnections().map((connection) => [connection.id, connection])
@@ -143,8 +139,8 @@ export function approveRemoteConnector(
 }
 
 /**
- * Per-user OAuth tokens for MCP connections. In-memory like the bearer vault — the hackathon
- * contract is that provider secrets never persist to disk; users re-login after a restart.
+ * Per-user OAuth tokens for remote MCP connections. The in-process map is a decrypted cache;
+ * encrypted records in SQLite remain the source of truth across restarts.
  */
 export interface McpUserToken {
   accessToken: string;
@@ -173,6 +169,11 @@ export async function completeMcpOAuth(
   const byUser = mcpUserTokens.get(connectionId) ?? new Map<string, McpUserToken>();
   byUser.set(slackUserId, token);
   mcpUserTokens.set(connectionId, byUser);
+  stateDatabase().prepare(`
+    INSERT INTO remote_oauth_tokens (connection_id, workspace_id, user_id, token_json_encrypted)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(connection_id, workspace_id, user_id) DO UPDATE SET token_json_encrypted = excluded.token_json_encrypted
+  `).run(connectionId, connection.workspaceId, slackUserId, encryptSecret(JSON.stringify(token)));
 
   if (connection.tools.length === 0) {
     const client = new RemoteMcpClient(connection.url, token.accessToken);
@@ -191,7 +192,20 @@ export async function completeMcpOAuth(
 
 /** Returns a live access token for this user, refreshing through the discovered endpoint. */
 async function getMcpUserToken(connectionId: string, slackUserId: string): Promise<McpUserToken | undefined> {
-  const token = mcpUserTokens.get(connectionId)?.get(slackUserId);
+  const connection = connections.get(connectionId);
+  let token = mcpUserTokens.get(connectionId)?.get(slackUserId);
+  if (!token && connection) {
+    const row = stateDatabase().prepare(`
+      SELECT token_json_encrypted FROM remote_oauth_tokens
+      WHERE connection_id = ? AND workspace_id = ? AND user_id = ?
+    `).get(connectionId, connection.workspaceId, slackUserId) as { token_json_encrypted: string } | undefined;
+    if (row) {
+      token = JSON.parse(decryptSecret(row.token_json_encrypted)) as McpUserToken;
+      const byUser = mcpUserTokens.get(connectionId) ?? new Map<string, McpUserToken>();
+      byUser.set(slackUserId, token);
+      mcpUserTokens.set(connectionId, byUser);
+    }
+  }
   if (!token) return undefined;
   if (!token.expiresAt || new Date(token.expiresAt).getTime() - Date.now() > 60_000) return token;
   if (!token.refreshToken) return token;
@@ -243,12 +257,13 @@ export function completeCredentialIntent(secret: string, bearerToken: string, pr
 
   const connection = connections.get(intent.connectionId);
   if (!connection) throw new Error("The connection no longer exists.");
-  const credentialRef = `credential:${randomUUID()}`;
-  credentialVault.set(credentialRef, bearerToken.trim());
+  const credentialRef = `credential:${connection.id}`;
   connection.credentialRef = credentialRef;
   connection.providerScopes = providerScopes;
   connection.active = true;
   connections.set(connection.id, connection);
+  stateDatabase().prepare("UPDATE remote_connections SET bearer_encrypted = ?, updated_at = ? WHERE id = ?")
+    .run(encryptSecret(bearerToken.trim()), new Date().toISOString(), connection.id);
   saveConnections();
   return connection;
 }
@@ -344,18 +359,22 @@ export class AuthorizedConnectionToolProvider implements AgentToolProvider {
 
     let credential: string | undefined;
     if (current?.credentialKind === "oauth") {
-      // OAuth connections are authorized per person — the caller's own login, never the owner's.
-      const token = await getMcpUserToken(current.id, this.context.userId);
+      // Workspace-authorized connections use the owner's explicitly granted read-only login.
+      const token = await getMcpUserToken(current.id, current.ownerSlackUserId);
       if (!token) {
         return {
           error:
-            `You haven't logged into ${current.name} yet. Paste its URL again with ` +
-            "`connect <url>` and approve with the `oauth` flag to get your own login link."
+            `The owner has not completed authorization for ${current.name}. Ask the owner to reconnect it ` +
+            "privately before this workspace connection can be used."
         };
       }
       credential = token.accessToken;
     } else {
-      credential = current?.credentialRef ? credentialVault.get(current.credentialRef) : undefined;
+      if (current?.credentialRef) {
+        const row = stateDatabase().prepare("SELECT bearer_encrypted FROM remote_connections WHERE id = ?")
+          .get(current.id) as { bearer_encrypted?: string } | undefined;
+        credential = row?.bearer_encrypted ? decryptSecret(row.bearer_encrypted) : undefined;
+      }
       if (current?.credentialRef && !credential) {
         return { error: "This connector credential is unavailable; the owner must reconnect it." };
       }
@@ -432,11 +451,12 @@ function toRemoteTool(tool: McpTool): RemoteToolDefinition {
 
 function loadConnections(): RemoteConnection[] {
   try {
-    if (!existsSync(CONNECTION_STORE_PATH)) return [];
-    const parsed = JSON.parse(readFileSync(CONNECTION_STORE_PATH, "utf8")) as { connections?: RemoteConnection[] };
-    return Array.isArray(parsed.connections)
-      ? parsed.connections.map((connection) => ({ ...connection, active: connection.credentialRef ? false : connection.active }))
-      : [];
+    return (stateDatabase().prepare("SELECT state_json, bearer_encrypted FROM remote_connections").all() as Array<{
+      state_json: string; bearer_encrypted?: string;
+    }>).map((row) => {
+      const connection = JSON.parse(row.state_json) as RemoteConnection;
+      return { ...connection, active: connection.credentialRef ? Boolean(row.bearer_encrypted) : connection.active };
+    });
   } catch {
     return [];
   }
@@ -444,12 +464,18 @@ function loadConnections(): RemoteConnection[] {
 
 function saveConnections(): void {
   try {
-    mkdirSync(path.dirname(CONNECTION_STORE_PATH), { recursive: true });
-    writeFileSync(
-      CONNECTION_STORE_PATH,
-      JSON.stringify({ connections: [...connections.values()] }, null, 2),
-      { mode: 0o600 }
-    );
+    const db = stateDatabase();
+    const save = db.prepare(`
+      INSERT INTO remote_connections (id, workspace_id, owner_user_id, state_json, updated_at)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET workspace_id = excluded.workspace_id,
+        owner_user_id = excluded.owner_user_id, state_json = excluded.state_json, updated_at = excluded.updated_at
+    `);
+    db.transaction(() => {
+      for (const connection of connections.values()) {
+        save.run(connection.id, connection.workspaceId, connection.ownerSlackUserId, JSON.stringify(connection), new Date().toISOString());
+      }
+    })();
   } catch {
     console.warn("Remote connector metadata could not be persisted.");
   }

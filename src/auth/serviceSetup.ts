@@ -1,127 +1,82 @@
-import { randomBytes } from "node:crypto";
 import express from "express";
-import { findService, type ServiceDefinition } from "../services/registry.js";
-import { setClientCreds } from "./deploymentCreds.js";
+import { findService } from "../services/registry.js";
+import {
+  consumeOAuthIntent,
+  createOAuthIntent,
+  getOAuthIntent,
+  getWorkspaceClientCredentials,
+  setWorkspaceClientCredentials
+} from "../state/repositories.js";
+import { isWorkspaceAdministrator } from "./workspaceAdmin.js";
 
-/**
- * Secure one-time setup form for a service's provider OAuth app credentials (client id/secret).
- * Linked from Slack when someone asks to connect a service whose credentials this deployment
- * doesn't have yet — the agent walks them through creating the provider app and takes the values
- * here, never in Slack and never via SSH/env edits. The form also discloses every host the
- * integration will contact; submitting it is the human approval that arms a synthesized spec.
- */
-
-const INTENT_TTL_MS = 15 * 60_000;
-const setupIntents = new Map<string, { serviceId: string; slackUserId: string; expiresAt: number }>();
-
-export function createServiceSetupIntent(serviceId: string, slackUserId: string): string {
-  const secret = randomBytes(24).toString("base64url");
-  setupIntents.set(secret, { serviceId, slackUserId, expiresAt: Date.now() + INTENT_TTL_MS });
-  return secret;
+export function createServiceSetupIntent(
+  serviceId: string,
+  workspaceId: string,
+  userId: string,
+  expectedVersion = getWorkspaceClientCredentials(workspaceId, serviceId)?.version ?? 0
+): string {
+  return createOAuthIntent({ kind: "setup", serviceId, workspaceId, userId, expectedVersion });
 }
 
-function getIntentService(secret: string): ServiceDefinition | undefined {
-  const intent = setupIntents.get(secret);
-  if (!intent || intent.expiresAt < Date.now()) {
-    setupIntents.delete(secret);
-    return undefined;
-  }
-  return findService(intent.serviceId);
-}
-
-export function registerServiceSetupRoutes(app: express.Express, env: NodeJS.ProcessEnv = process.env): void {
-  app.get("/auth/service-setup/:secret", (request, response) => {
-    const service = getIntentService(String(request.params.secret ?? ""));
-    if (!service) {
-      response.status(404).type("html").send(page("Invalid link", "This setup link is invalid or expired. Ask the bot to connect the service again for a fresh one."));
+export function registerServiceSetupRoutes(
+  app: express.Express,
+  env: NodeJS.ProcessEnv = process.env,
+  adminCheck = isWorkspaceAdministrator
+): void {
+  app.get("/auth/service-setup/:secret", async (request, response) => {
+    const secret = String(request.params.secret ?? "");
+    const intent = getOAuthIntent(secret, "setup");
+    const service = intent ? findService(intent.serviceId) : undefined;
+    if (!intent || !service || !await adminCheck(intent.workspaceId, intent.userId, { env })) {
+      response.status(404).type("html").send(page("Invalid setup link", "This link is invalid, expired, or no longer authorized."));
+      return;
+    }
+    if (getWorkspaceClientCredentials(intent.workspaceId, service.id, env)?.source === "environment") {
+      response.status(409).type("html").send(page("Already configured", "This service is configured by the deployment environment and cannot be replaced here."));
       return;
     }
     const callbackUrl = `${env.PUBLIC_BASE_URL?.replace(/\/$/, "") ?? "<PUBLIC_BASE_URL>"}/auth/services/${service.id}/callback`;
-    const instructions = (service.dynamicSpec?.setupInstructions ?? "Create an OAuth application in the provider's developer settings.")
-      .replace(/\{CALLBACK_URL\}/g, callbackUrl);
-    const hosts = [
-      ...new Set([
-        ...(service.dynamicSpec?.apiHosts ?? []),
-        ...(service.oauth ? [new URL(service.oauth.authorizeUrl).hostname, new URL(service.oauth.tokenUrl).hostname] : [])
-      ])
-    ];
-    response.type("html").send(`<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Set up ${escapeHtml(service.label)}</title><style>${styles}</style></head>
-<body><main><h1>Set up ${escapeHtml(service.label)}</h1>
-<p>${linkifyEscaped(escapeHtml(instructions))}</p>
-<p><strong>Callback / redirect URL to register:</strong></p>
-<div class="copyrow"><code class="copyable" title="Click to copy" data-copy="${escapeHtml(callbackUrl)}">${escapeHtml(callbackUrl)}</code><button type="button" class="copy" data-copy="${escapeHtml(callbackUrl)}">Copy</button></div>
-<p><strong>This integration will only ever contact:</strong> ${hosts.map((host) => `<code>${escapeHtml(host)}</code>`).join(", ")} — read-only. Submitting this form approves that.</p>
-<form method="post">
-<label>Client ID<input name="clientId" required autocomplete="off"></label>
-<label>Client secret<input name="clientSecret" type="password" required autocomplete="off"></label>
-<button type="submit">Save and enable ${escapeHtml(service.label)}</button>
-</form>
-<p>These values go directly to the agentkj backend and are never posted to Slack or sent to the language model.</p>
-</main>
-<script>
-document.querySelectorAll("[data-copy]").forEach((element) => {
-  element.addEventListener("click", async () => {
-    const feedback = element.closest(".copyrow").querySelector(".copy");
-    try {
-      await navigator.clipboard.writeText(element.dataset.copy);
-      feedback.textContent = "Copied!";
-    } catch {
-      const code = element.closest(".copyrow").querySelector("code");
-      const range = document.createRange();
-      range.selectNodeContents(code);
-      getSelection().removeAllRanges();
-      getSelection().addRange(range);
-      feedback.textContent = "Select + copy";
-    }
-    setTimeout(() => { feedback.textContent = "Copy"; }, 1600);
-  });
-});
-</script>
-</body></html>`);
+    const instructions = service.dynamicSpec.setupInstructions.replace(/\{CALLBACK_URL\}/g, callbackUrl);
+    const replacing = (intent.expectedVersion ?? 0) > 0;
+    response.type("html").send(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Configure ${escapeHtml(service.label)}</title><style>${styles}</style></head><body><main><h1>${replacing ? "Replace" : "Configure"} ${escapeHtml(service.label)}</h1><p><strong>Administrator task:</strong> register one provider application for this Slack workspace. Other members will only authorize their own accounts.</p><p>${escapeHtml(instructions)}</p><p><strong>Callback URL:</strong> <code>${escapeHtml(callbackUrl)}</code></p><p>This read-only integration may contact: ${service.dynamicSpec.apiHosts.map((host) => `<code>${escapeHtml(host)}</code>`).join(", ")}.</p>${replacing ? "<p><strong>Replacing these credentials will require every connected member to authorize again.</strong></p>" : ""}<form method="post"><label>Client ID<input name="clientId" required autocomplete="off"></label><label>Client secret<input name="clientSecret" type="password" required autocomplete="off"></label>${replacing ? '<label class="confirm"><input name="confirmReplace" type="checkbox" value="yes" required> I understand existing grants will require reauthorization.</label>' : ""}<button type="submit">${replacing ? "Replace" : "Save"} workspace configuration</button></form><p>These values go directly to the backend and are never posted to Slack or sent to the language model.</p></main></body></html>`);
   });
 
-  app.post("/auth/service-setup/:secret", express.urlencoded({ extended: false }), (request, response) => {
+  app.post("/auth/service-setup/:secret", express.urlencoded({ extended: false, limit: "32kb" }), async (request, response) => {
     const secret = String(request.params.secret ?? "");
-    const service = getIntentService(secret);
-    if (!service) {
-      response.status(404).type("html").send(page("Invalid link", "This setup link is invalid or expired."));
+    const preview = getOAuthIntent(secret, "setup");
+    if (!preview || !await adminCheck(preview.workspaceId, preview.userId, { fresh: true, env })) {
+      response.status(403).type("html").send(page("Setup denied", "Your workspace administrator status could not be verified."));
       return;
     }
+    const intent = consumeOAuthIntent(secret, "setup");
+    const service = intent ? findService(intent.serviceId) : undefined;
     const clientId = typeof request.body?.clientId === "string" ? request.body.clientId.trim() : "";
     const clientSecret = typeof request.body?.clientSecret === "string" ? request.body.clientSecret.trim() : "";
-    if (!clientId || !clientSecret) {
-      response.status(400).type("html").send(page("Missing values", "Both the client ID and client secret are required."));
+    if (!intent || !service || !clientId || !clientSecret) {
+      response.status(400).type("html").send(page("Setup failed", "The link expired or required values were missing."));
       return;
     }
-    setClientCreds(service.id, clientId, clientSecret);
-    setupIntents.delete(secret);
-    response.type("html").send(page(
-      `${escapeHtml(service.label)} is ready`,
-      `Credentials saved. Go back to Slack and say “connect ${escapeHtml(service.label.toLowerCase())}” — you'll get your personal connect link.`
-    ));
+    if ((intent.expectedVersion ?? 0) > 0 && request.body?.confirmReplace !== "yes") {
+      response.status(400).type("html").send(page("Confirmation required", "Credential replacement was not confirmed."));
+      return;
+    }
+    try {
+      setWorkspaceClientCredentials({
+        workspaceId: intent.workspaceId,
+        serviceId: service.id,
+        clientId,
+        clientSecret,
+        configuredBy: intent.userId,
+        expectedVersion: intent.expectedVersion,
+        env
+      });
+      response.type("html").send(page(`${escapeHtml(service.label)} is ready`, "Workspace configuration saved. Members can now authorize their own accounts from Slack."));
+    } catch (error) {
+      response.status(409).type("html").send(page("Setup changed", escapeHtml(error instanceof Error ? error.message : "Request a fresh setup link.")));
+    }
   });
 }
 
-const styles = `body{font-family:system-ui,sans-serif;margin:0;background:#f6f6f4}main{max-width:560px;margin:3rem auto;padding:2rem;background:#fff;border-radius:12px;box-shadow:0 2px 10px rgba(0,0,0,.06)}h1{font-size:1.3rem}label{display:block;margin:1rem 0;font-weight:600}input{display:block;width:100%;box-sizing:border-box;margin-top:.35rem;padding:.55rem;border:1px solid #ccc;border-radius:8px;font-size:1rem}button{margin-top:.5rem;padding:.6rem 1.2rem;border:0;border-radius:8px;background:#4a154b;color:#fff;font-size:1rem;cursor:pointer}code{background:#f0f0ee;padding:.1rem .35rem;border-radius:4px}.copyrow{display:flex;align-items:center;gap:.6rem;flex-wrap:wrap;margin:.4rem 0 1rem}.copyrow code{word-break:break-all;cursor:pointer}.copyrow .copy{margin-top:0;padding:.35rem .8rem;font-size:.85rem}a{color:#4a154b}`;
-
-function page(title: string, message: string): string {
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><style>${styles}</style></head><body><main><h1>${title}</h1><p>${message}</p></main></body></html>`;
-}
-
-function escapeHtml(value: string): string {
-  return value.replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]!));
-}
-
-/**
- * Turns bare URLs in ALREADY-ESCAPED text into anchors (trailing punctuation stays outside the
- * link). Escape-then-linkify order matters: the match can only contain entity-escaped text, so
- * nothing unescaped ever lands inside the href or the anchor body.
- */
-function linkifyEscaped(escaped: string): string {
-  return escaped.replace(
-    /https?:\/\/[^\s<>"']*[^\s<>"'.,;:)]/g,
-    (url) => `<a href="${url}" target="_blank" rel="noopener noreferrer">${url}</a>`
-  );
-}
+const styles = "body{font:16px system-ui;background:#f7f7f8;margin:0}main{max-width:620px;margin:8vh auto;background:#fff;padding:32px;border-radius:14px;box-shadow:0 8px 32px #0001}label{display:block;margin:18px 0;font-weight:600}input{box-sizing:border-box;width:100%;padding:11px;margin-top:6px}.confirm input{width:auto}button{padding:12px 18px;background:#4a154b;color:#fff;border:0;border-radius:8px}code{word-break:break-all;background:#eee;padding:2px 5px}";
+function page(title: string, message: string): string { return `<!doctype html><html><head><meta charset="utf-8"><style>${styles}</style></head><body><main><h1>${title}</h1><p>${message}</p></main></body></html>`; }
+function escapeHtml(value: string): string { return value.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!); }

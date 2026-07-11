@@ -16,8 +16,8 @@ import { redactSecrets } from "../security/redaction.js";
  * mcpClient.ts). Letting end users register arbitrary commands on a shared host is remote code
  * execution. This registry itself is transport-agnostic re: *where* specs come from — the admin
  * config loader below (loadGlobalServerSpecs) is safe because only an admin edits mcp.json/env.
- * Per-user self-service (src/mcp/catalog.ts) must NEVER accept a free-form command from a user —
- * it only lets them pick a vetted catalog entry and submit setup values through a backend form.
+ * End users never register local commands. Self-service connections use validated remote URLs;
+ * local processes remain an operator-only configuration surface.
  * Free-form local specs
  * are fine for a single-user self-hosted install, never for a shared multi-tenant deployment.
  */

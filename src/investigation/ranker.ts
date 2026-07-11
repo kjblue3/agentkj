@@ -5,15 +5,6 @@ import type {
 } from "../types/schemas.js";
 import { tokenize } from "../utils/text.js";
 
-const sourceBoost = {
-  incident: 1.5,
-  docs: 1.1,
-  github: 1.2,
-  jira: 1,
-  slack: 0.8,
-  web: 0.9
-} as const;
-
 export function scoreEvidence(
   item: EvidenceItem,
   query: InvestigationQuery,
@@ -42,7 +33,7 @@ export function scoreEvidence(
     entityMatches * 2.75 +
     tagMatches * 2.25 +
     recency +
-    (sourceBoost[item.source as keyof typeof sourceBoost] ?? 1) +
+    1 +
     (item.confidence ?? 0.5);
 
   return { item, score: Number(score.toFixed(3)), reasons };

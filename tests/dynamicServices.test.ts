@@ -70,17 +70,17 @@ describe("dynamicServiceSpecSchema", () => {
 
 describe("DynamicToolProvider", () => {
   const spec = dynamicServiceSpecSchema.parse(validSpec);
-  const token = { token: "tok", accountId: "42", connectedAt: "2026-07-10T00:00:00.000Z" };
+  const token = { token: "tok", accountId: "42", connectedAt: "2026-07-10T00:00:00.000Z", scopes: [], health: "ready" as const };
 
   it("builds the request from the template, encodes substitutions, and returns evidence", async () => {
     const fetchSpy = vi.fn(async () => new Response(JSON.stringify([{ id: 1, name: "Morning run" }]), { status: 200 }));
     vi.stubGlobal("fetch", fetchSpy);
 
-    const provider = new DynamicToolProvider(spec, token);
+    const provider = new DynamicToolProvider(spec, token, "conn1", "U1");
     const tools = await provider.listAgentTools();
-    expect(tools[0]!.type === "function" && tools[0]!.function.name).toBe("acmefit__list_workouts");
+    expect(tools[0]!.type === "function" && tools[0]!.function.name).toBe("connection_conn1__list_workouts");
 
-    const result = (await provider.call("acmefit__list_workouts", { per_page: "5" })) as { data: string; evidence: unknown[] };
+    const result = (await provider.call("connection_conn1__list_workouts", { per_page: "5" })) as { data: string; evidence: unknown[] };
     expect(fetchSpy).toHaveBeenCalledWith(
       "https://api.acmefit.example/v1/athletes/42/workouts?per_page=5",
       expect.objectContaining({ headers: expect.objectContaining({ Authorization: "Bearer tok" }) })
@@ -91,9 +91,13 @@ describe("DynamicToolProvider", () => {
 
   it("reports a reconnect-worthy error on 401 instead of junk data", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response("", { status: 401 })));
-    const provider = new DynamicToolProvider(spec, token);
-    const result = (await provider.call("acmefit__list_workouts", {})) as { error?: string };
-    expect(result.error).toContain("reconnect");
+    const provider = new DynamicToolProvider(spec, token, "conn1", "U1");
+    await expect(provider.call("connection_conn1__list_workouts", {})).rejects.toMatchObject({
+      name: "ConnectionAccessError",
+      code: "authorization_required",
+      connectionId: "conn1",
+      ownerUserId: "U1"
+    });
   });
 });
 

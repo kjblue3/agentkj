@@ -16,8 +16,8 @@ const readTool: RemoteToolDefinition = {
 function connection(overrides: Partial<RemoteConnection> = {}): RemoteConnection {
   return {
     id: "conn",
-    name: "notion.example",
-    url: "https://notion.example/mcp",
+    name: "records.example",
+    url: "https://records.example/mcp",
     ownerSlackUserId: "UOWNER",
     workspaceId: "T1",
     allowedSlackUserIds: [],
