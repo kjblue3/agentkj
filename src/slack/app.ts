@@ -27,6 +27,7 @@ import {
   createInvestigationJob,
   getInvestigationJob,
   getInvestigationJobResult,
+  getStoredServiceToken,
   listDueCapacityJobs,
   listExpiredCapacityJobs,
   listWorkspaceTokens,
@@ -126,15 +127,24 @@ async function privateConnectMessage(
   if (!isServiceConfigured(service, context.workspaceId)) {
     if (await isWorkspaceAdministrator(context.workspaceId, context.userId)) {
       const secret = createServiceSetupIntent(service.id, context.workspaceId, context.userId);
-      return `This workspace needs a one-time administrator setup for *${service.label}*. <${base}/auth/service-setup/${secret}|Review and configure the shared OAuth application>. Other members will authorize only their own accounts.`;
+      return `One-time setup needed! *${service.label}* isn’t configured for this workspace yet. <${base}/auth/service-setup/${secret}|Set up the shared OAuth app here> — after that, everyone just authorizes their own account.`;
     }
     const admins = await listWorkspaceAdministrators(context.workspaceId);
     const owners = admins.length > 0 ? admins.map((id) => `<@${id}>`).join(", ") : "a workspace administrator";
-    return `*${service.label}* needs one-time workspace setup by ${owners}. No credentials or setup link are available to non-administrators.`;
+    return `Almost there — *${service.label}* needs a quick one-time setup by ${owners} first. Once that’s done, you can connect your own account. (No credentials ever pass through Slack.)`;
   }
+  // Re-prompting someone who is already connected with the full consent blurb is noise — check
+  // their stored grant first and only pitch the connect flow to people who actually need it.
+  const existing = getStoredServiceToken(context.workspaceId, context.userId, service.id);
   const url = serviceConnectUrl(service, context.workspaceId, context.userId);
-  if (!url) return `I couldn’t create a valid authorization link.`;
-  return `By continuing, you authorize a read-only workspace connection. Other workspace members may trigger its use, it may be combined with other members’ connections, and evidence-backed findings may be posted in public Slack threads. <${url}|Authorize your ${service.label} account>.`;
+  if (!url) return `Hmm, I couldn’t create a valid authorization link. Try again in a moment?`;
+  if (existing?.health === "ready") {
+    return `Good news — your *${service.label}* account is already connected and ready to go! Just ask me a question that needs it. If it’s acting up, <${url}|re-authorize here> for a fresh login.`;
+  }
+  if (existing) {
+    return `Your *${service.label}* connection needs a fresh login. <${url}|Re-authorize here> and we’re back in business — same read-only access as before.`;
+  }
+  return `Hey — you’re not connected with *${service.label}* yet! <${url}|Connect your account?> Watch out though: while it’s read-only, other members of this workspace can use it in their investigations, it can be combined with teammates’ connections, and findings backed by its data get posted in public threads.`;
 }
 
 export async function handleSlackIntent(args: {
@@ -167,7 +177,7 @@ export async function handleSlackIntent(args: {
     if (intent.kind === "investigate") {
       const job = createInvestigationJob(context, text);
       updateInvestigationJob(job.id, "waiting_for_capacity", { retryAt: error.retryAt.toISOString() });
-      const posted = await publicReply(`All configured language-model keys are temporarily rate-limited. I saved this request and will resume it after ${error.retryAt.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}.`);
+      const posted = await publicReply(`All my language-model keys are cooling down from rate limits right now. I saved your request and I’ll pick it back up automatically after ${error.retryAt.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}.`);
       const statusMessageTs = posted && typeof posted === "object" && "ts" in posted ? String((posted as { ts: unknown }).ts) : undefined;
       if (statusMessageTs) updateInvestigationJob(job.id, "waiting_for_capacity", { retryAt: error.retryAt.toISOString(), statusMessageTs });
       scheduleResume(job.id, pipeline, publicReply, updatePublicStatus);
@@ -182,17 +192,17 @@ export async function handleSlackIntent(args: {
   if (intent.kind === "list_connectors") {
     const lines = available.descriptors.length > 0
       ? available.descriptors.map((item) => `• *${item.serviceLabel}* via <@${item.ownerUserId}> — ${item.health}`).join("\n")
-      : "No member has authorized a connection yet.";
-    await privateReply(`${intent.acknowledgement ? `${intent.acknowledgement}\n\n` : ""}*Workspace connections available to investigations:*\n${lines}\n\n*Integrations:*\n${describeServices(context.workspaceId)}`);
+      : "Nobody’s connected anything yet — you could be first! Just say `connect <service>`.";
+    await privateReply(`${intent.acknowledgement ? `${intent.acknowledgement}\n\n` : ""}*Here’s what’s hooked up right now:*\n${lines}\n\n*Services you can connect:*\n${describeServices(context.workspaceId)}`);
     return;
   }
   if (intent.kind === "help") {
-    await publicReply(intent.acknowledgement ?? "Ask a question in this thread and I’ll investigate it across authorized workspace connections. Connection setup and account details stay private.");
+    await publicReply(intent.acknowledgement ?? "Hey! Ask me anything in a thread and I’ll investigate it across the workspace’s connected sources. Want me to use one of your accounts? Just say `connect <service>` — setup and account details always stay private.");
     return;
   }
   if (intent.kind === "approve" || intent.kind === "share") {
     if (intent.kind === "share") {
-      await privateReply("Connections authorized through this workspace are already available read-only to workspace investigations.");
+      await privateReply("Good news — connections authorized through this workspace are already shared read-only with workspace investigations. Nothing more to do!");
       return;
     }
     const [, pendingId, credential = "none"] = text.trim().split(/\s+/);
@@ -224,7 +234,7 @@ export async function handleSlackIntent(args: {
 
   const job = createInvestigationJob(context, text);
   if (threadQueues.has(threadKey(context)) || activeInvestigations >= investigationLimit()) {
-    await publicReply("I’ve queued this investigation behind work already running for the workspace. It will stay in this thread and start automatically.");
+    await publicReply("I’m on it! Just wrapping up other work for this workspace first — your question is queued and will start automatically right here in this thread.");
   }
   await enqueueThread(context, () => runInvestigation({
     jobId: job.id,
@@ -250,7 +260,7 @@ async function handleConnect(target: string, context: InvestigationContext, priv
         channelId: context.channelId
       });
       const tools = pending.tools.map((tool) => `• \`${tool.name}\` — ${tool.description ?? "No description"}`).join("\n") || "No tools were advertised.";
-      await privateReply(`I inspected this experimental, untrusted remote MCP server.\n${tools}\n\nNothing is enabled yet. Approve it read-only for this workspace with \`approve ${pending.id}${pending.requiresAuth ? " oauth" : ""}\`. Use \`bearer\` only when the server explicitly requires a manually issued credential.`);
+      await privateReply(`I took a look at that remote MCP server — here’s what it offers (treated as experimental and untrusted):\n${tools}\n\nNothing’s enabled yet! Approve it read-only for this workspace with \`approve ${pending.id}${pending.requiresAuth ? " oauth" : ""}\`. Use \`bearer\` only when the server explicitly requires a manually issued credential.`);
     } catch (error) {
       await privateReply(error instanceof Error ? error.message : "The remote MCP server could not be inspected.");
     }
@@ -291,9 +301,9 @@ export async function runInvestigation(args: {
   const previousJob = getInvestigationJob(jobId);
   updateInvestigationJob(jobId, "running");
   if (previousJob?.statusMessageTs && args.updatePublicStatus) {
-    await args.updatePublicStatus(previousJob.statusMessageTs, "Language-model capacity is available again. I’ve resumed this investigation.");
+    await args.updatePublicStatus(previousJob.statusMessageTs, "We’re back! Capacity freed up, so I’ve resumed this investigation.");
   } else {
-    await publicReply(args.acknowledgement ?? "I’m tracing this through the workspace’s authorized sources now.");
+    await publicReply(args.acknowledgement ?? "On it — tracing this through the workspace’s connected sources now.");
   }
   try {
     const available = await connectionDescriptors(context.workspaceId, args.excludedConnectionIds);
@@ -347,23 +357,23 @@ export async function runInvestigation(args: {
       const url = service ? serviceConnectUrl(service, context.workspaceId, error.ownerUserId, jobId) : null;
       if (privateNotify && url) {
         await privateNotify(error.ownerUserId,
-          `This investigation needs your *${service!.label}* connection to be authorized again. Reauthorizing keeps it read-only and available to workspace investigations. <${url}|Reauthorize now>.`
+          `Hey — an investigation in this workspace needs your *${service!.label}* connection, but its login expired. <${url}|Re-authorize here> and I’ll pick the investigation right back up. Same read-only access as before.`
         );
       }
-      await publicReply(`I paused because a selected workspace connection needs renewed authorization. I’ve privately contacted <@${error.ownerUserId}>; I’ll resume automatically or try another compatible connection after 15 minutes.`);
+      await publicReply(`Quick pause — one of the connections I need has an expired login. I’ve pinged <@${error.ownerUserId}> privately; I’ll resume automatically once they re-authorize (or route around it after 15 minutes).`);
       scheduleAuthorizationResume({ ...args, ownerUserId: error.ownerUserId, connectionId: error.connectionId });
       return;
     }
     if (error instanceof LlmCapacityExhausted) {
       updateInvestigationJob(jobId, "waiting_for_capacity", { retryAt: error.retryAt.toISOString() });
-      const posted = await publicReply(`All configured language-model keys are temporarily rate-limited. I saved this investigation and will resume it after ${error.retryAt.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}.`);
+      const posted = await publicReply(`All my language-model keys are cooling down from rate limits right now. I saved this investigation and I’ll pick it back up automatically after ${error.retryAt.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}.`);
       const statusMessageTs = posted && typeof posted === "object" && "ts" in posted ? String((posted as { ts: unknown }).ts) : undefined;
       if (statusMessageTs) updateInvestigationJob(jobId, "waiting_for_capacity", { retryAt: error.retryAt.toISOString(), statusMessageTs });
       scheduleResume(jobId, pipeline, publicReply, args.updatePublicStatus);
       return;
     }
     updateInvestigationJob(jobId, "failed");
-    await publicReply("I couldn’t complete this investigation. The failure was recorded without exposing connection details; please try again shortly.");
+    await publicReply("Ugh, something went wrong and I couldn’t finish this one. Nothing sensitive was exposed — give it another try in a bit.");
   }
 }
 
