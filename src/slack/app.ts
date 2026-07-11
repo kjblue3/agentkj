@@ -386,8 +386,14 @@ export async function runInvestigation({
       conversationContext,
       allowSharedGitHubFallback: false
     });
-    const reportId = cacheReport(report);
-    await postReport(report.shortAnswer, buildReportBlocks(report, reportId));
+    // Never tell someone to connect a service they already connected — when a connected
+    // service's tools failed (paywall, revoked grant), the shortAnswer carries the real reason.
+    const suggestedService = report.suggestedConnection ? resolveService(report.suggestedConnection) : undefined;
+    const cleaned = suggestedService && isServiceConnected(suggestedService, userId)
+      ? { ...report, suggestedConnection: undefined }
+      : report;
+    const reportId = cacheReport(cleaned);
+    await postReport(cleaned.shortAnswer, buildReportBlocks(cleaned, reportId));
   } catch (error) {
     console.error(`${source} investigation failed.`, error);
     await reply({

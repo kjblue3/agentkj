@@ -52,7 +52,18 @@ export class DynamicToolProvider implements AgentToolProvider {
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
       });
       if (response.status === 401 || response.status === 403) {
-        return { error: `${this.spec.label} rejected the stored token (HTTP ${response.status}). The user should reconnect ${this.spec.label}.` };
+        // Providers put the real reason in the body — paywalls ("premium subscription required"),
+        // missing scopes, dev-mode allowlists. Relay it verbatim so the agent tells the user the
+        // truth instead of guessing "reconnect" (a 403 is usually NOT a login problem).
+        const reason = (await response.text()).slice(0, 300);
+        return {
+          error:
+            `${this.spec.label} refused access (HTTP ${response.status})` +
+            (reason ? `: "${reason}"` : ".") +
+            (response.status === 401
+              ? " The stored login may have expired — reconnecting may fix it."
+              : " This looks like a provider-side restriction (plan/paywall/permissions), not a login problem — tell the user exactly what the provider said.")
+        };
       }
       if (!response.ok) return { error: `${this.spec.label} returned HTTP ${response.status}.` };
       const body = truncate(await response.text(), RESPONSE_CHAR_LIMIT);
