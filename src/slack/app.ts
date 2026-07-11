@@ -328,6 +328,27 @@ export async function handleSlackIntent({
 }
 
 /**
+ * Answers are ephemeral (never in channel history), so follow-up questions can't rediscover
+ * them from the thread — this in-memory per-user memory of the last few exchanges is the
+ * continuity mechanism instead. Context only; the agent is instructed never to cite it.
+ */
+const recentExchanges = new Map<string, Array<{ question: string; answer: string }>>();
+
+function rememberExchange(userId: string, question: string, answer: string): void {
+  const history = recentExchanges.get(userId) ?? [];
+  history.push({ question, answer });
+  recentExchanges.set(userId, history.slice(-3));
+}
+
+function recentExchangeContext(userId: string): string | undefined {
+  const history = recentExchanges.get(userId);
+  if (!history || history.length === 0) return undefined;
+  return history
+    .map((exchange) => `user asked: ${exchange.question.slice(0, 300)}\nyou answered: ${exchange.answer.slice(0, 600)}`)
+    .join("\n");
+}
+
+/**
  * The investigation path, shared by direct questions and approved follow-ups. Every personal
  * source the user connected contributes tools; the shared env GitHub fallback is disabled — a
  * person's investigation uses only what THEY connected.
@@ -383,7 +404,7 @@ export async function runInvestigation({
       ],
       relevantSources,
       connectableServices,
-      conversationContext,
+      conversationContext: [recentExchangeContext(userId), conversationContext].filter(Boolean).join("\n") || undefined,
       allowSharedGitHubFallback: false
     });
     // Never tell someone to connect a service they already connected — when a connected
@@ -394,6 +415,7 @@ export async function runInvestigation({
       : report;
     const reportId = cacheReport(cleaned);
     await postReport(cleaned.shortAnswer, buildReportBlocks(cleaned, reportId));
+    rememberExchange(userId, scopedQuestion, cleaned.shortAnswer);
   } catch (error) {
     console.error(`${source} investigation failed.`, error);
     await reply({
@@ -711,6 +733,23 @@ export function createSlackApp(pipeline: InvestigationPipeline): App | null {
       }
     }
 
+    // Everything the bot says lands as a channel-level ephemeral — one consistent "Only
+    // visible to you" stream, never a thread reply. Two reasons: privacy (answers can contain
+    // personal data from the asker's connected accounts), and unification (button clicks reply
+    // through response_url, which posts channel ephemerals — mixing those with thread messages
+    // split one flow across two visual places).
+    const ephemeralToUser: SlackIntentReply = (message) => {
+      const payload = typeof message === "string" ? { text: message } : message;
+      // response_type/replace_original are response_url concepts; chat.postEphemeral rejects them.
+      const { response_type: _responseType, replace_original: _replaceOriginal, ...rest } = payload;
+      return client.chat.postEphemeral({
+        channel: event.channel,
+        user: userId,
+        text: typeof rest.text === "string" ? rest.text : " ",
+        ...rest
+      } as Parameters<typeof client.chat.postEphemeral>[0]);
+    };
+
     await handleSlackIntent({
       text: stripMention(event.text),
       userId,
@@ -719,10 +758,8 @@ export function createSlackApp(pipeline: InvestigationPipeline): App | null {
       threadTs,
       conversationContext,
       pipeline,
-      reply: (message) => typeof message === "string"
-        ? sayInThread({ text: message, thread_ts: threadTs })
-        : sayInThread({ ...message, thread_ts: threadTs }),
-      postReport: (text, blocks) => sayInThread({ text, blocks, thread_ts: threadTs }),
+      reply: ephemeralToUser,
+      postReport: (text, blocks) => ephemeralToUser({ text, blocks }),
       source: "mention"
     });
   });
@@ -768,7 +805,9 @@ export function createSlackApp(pipeline: InvestigationPipeline): App | null {
       reply: (message) => respond(typeof message === "string"
         ? { response_type: "ephemeral", replace_original: false, text: message }
         : { replace_original: false, ...message }),
-      postReport: (text, blocks) => client.chat.postMessage({ channel: channelId, thread_ts: threadTs, text, blocks }),
+      // Ephemeral like every other bot message — the follow-up's result is for the clicker only.
+      postReport: (text, blocks) =>
+        client.chat.postEphemeral({ channel: channelId, user: userId, text, blocks } as Parameters<typeof client.chat.postEphemeral>[0]),
       conversationContext:
         `The user clicked "Do it" on a follow-up you suggested. Original question: ${report.question}\n` +
         `Your earlier answer: ${report.shortAnswer}\nNow execute the follow-up: ${followup}`,
