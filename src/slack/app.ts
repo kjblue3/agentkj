@@ -1,7 +1,9 @@
+import { randomBytes } from "node:crypto";
 import { App } from "@slack/bolt";
 import type { Block, KnownBlock } from "@slack/types";
 import type OpenAI from "openai";
 import type { AgentToolProvider } from "../agent/toolProvider.js";
+import { createMcpLoginLink } from "../auth/mcpOAuthRoutes.js";
 import { getValidServiceToken, serviceConnectUrl } from "../auth/serviceOAuth.js";
 import {
   createUserConnectorCredentialIntent,
@@ -39,9 +41,7 @@ import {
 } from "../mcp/connections.js";
 import { McpToolRegistry, type McpServerSpec } from "../mcp/registry.js";
 import {
-  buildEvidenceBlocks,
-  buildReportBlocks,
-  buildTimelineBlocks
+  buildReportBlocks
 } from "./blocks.js";
 import { cacheReport, getCachedReport } from "./reportCache.js";
 
@@ -148,37 +148,16 @@ function parseOwnerRepo(text: string): { owner?: string; repo?: string; question
   return { owner, repo, question: rest ?? text };
 }
 
-export const FOLLOWUP_FALLBACK_MESSAGE =
-  "I couldn't open the follow-up form. Suggested follow-up: verify the prevention control and attach the result to the incident.";
-
 function stripMention(text: string): string {
   return text.replace(/<@[A-Z0-9]+>/gi, "").trim();
 }
 
+function normalizeName(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
 type SlackActionBody = Record<string, unknown>;
 type SlackBlock = Block | KnownBlock;
-
-type FollowupActionArgs = {
-  ack: () => Promise<void>;
-  action: { value?: unknown; action_id?: string };
-  body: SlackActionBody;
-  client: {
-    views: {
-      open: (request: Record<string, unknown>) => Promise<unknown>;
-    };
-  };
-  respond: (message: Record<string, unknown>) => Promise<unknown>;
-};
-
-type FollowupSubmitArgs = {
-  ack: () => Promise<void>;
-  body: SlackActionBody;
-  client: {
-    chat: {
-      postMessage: (request: Record<string, unknown>) => Promise<unknown>;
-    };
-  };
-};
 
 type SlackIntentReply = (message: Record<string, unknown> | string) => Promise<unknown>;
 
@@ -192,6 +171,8 @@ type SlackIntentArgs = {
   postReport: (reportText: string, blocks: SlackBlock[]) => Promise<unknown>;
   source: "slash" | "mention";
   workspaceId?: string;
+  /** Prior turns of the thread, for follow-ups referencing earlier answers. Context, not evidence. */
+  conversationContext?: string;
 };
 
 function usageText(): string {
@@ -212,168 +193,6 @@ function stringAt(value: Record<string, unknown> | undefined, key: string): stri
   return typeof child === "string" && child.trim() ? child : undefined;
 }
 
-function parseFollowupMetadata(value: string): { reportId: string; channelId?: string; threadTs?: string } {
-  try {
-    const parsed = JSON.parse(value) as Record<string, unknown>;
-    return {
-      reportId: typeof parsed.reportId === "string" ? parsed.reportId : "",
-      channelId: typeof parsed.channelId === "string" ? parsed.channelId : undefined,
-      threadTs: typeof parsed.threadTs === "string" ? parsed.threadTs : undefined
-    };
-  } catch {
-    return { reportId: value };
-  }
-}
-
-function followupMetadata(body: SlackActionBody, reportId: string): string {
-  const channel = objectAt(body, "channel");
-  const container = objectAt(body, "container");
-  const message = objectAt(body, "message");
-  return JSON.stringify({
-    reportId,
-    channelId: stringAt(channel, "id") ?? stringAt(container, "channel_id"),
-    threadTs: stringAt(message, "ts") ?? stringAt(container, "message_ts")
-  });
-}
-
-function extractFollowupText(body: SlackActionBody): string {
-  const view = objectAt(body, "view");
-  const state = objectAt(view, "state");
-  const values = objectAt(state, "values");
-  const followup = objectAt(values, "followup");
-  const text = objectAt(followup, "text");
-  const value = text?.value;
-  return typeof value === "string" ? value.trim() : "";
-}
-
-function logFollowupActionDetails(body: SlackActionBody, action: FollowupActionArgs["action"], reportId: string): void {
-  const user = objectAt(body, "user");
-  const team = objectAt(body, "team");
-  const channel = objectAt(body, "channel");
-  const container = objectAt(body, "container");
-  const message = objectAt(body, "message");
-  const triggerId = typeof body.trigger_id === "string" && body.trigger_id.trim() ? body.trigger_id : "";
-
-  console.info("Slack create_followup action received", {
-    actionId: action.action_id,
-    reportId,
-    bodyType: typeof body.type === "string" ? body.type : undefined,
-    userId: stringAt(user, "id"),
-    teamId: stringAt(team, "id"),
-    channelId: stringAt(channel, "id") ?? stringAt(container, "channel_id"),
-    messageTs: stringAt(message, "ts") ?? stringAt(container, "message_ts"),
-    containerType: stringAt(container, "type"),
-    hasTriggerId: Boolean(triggerId),
-    hasResponseUrl: typeof body.response_url === "string" && Boolean(body.response_url)
-  });
-}
-
-async function respondWithFollowupFallback(respond: FollowupActionArgs["respond"]): Promise<void> {
-  await respond({
-    response_type: "ephemeral",
-    replace_original: false,
-    text: FOLLOWUP_FALLBACK_MESSAGE
-  });
-}
-
-export async function handleCreateFollowupAction({
-  ack,
-  action,
-  body,
-  client,
-  respond
-}: FollowupActionArgs): Promise<void> {
-  await ack();
-  const reportId = typeof action.value === "string" ? action.value : "";
-  const triggerId = typeof body.trigger_id === "string" && body.trigger_id.trim() ? body.trigger_id : "";
-  logFollowupActionDetails(body, action, reportId);
-
-  if (!triggerId) {
-    console.warn("Slack create_followup action missing trigger_id; sending fallback.");
-    await respondWithFollowupFallback(respond);
-    return;
-  }
-
-  try {
-    const report = getCachedReport(reportId);
-    const initialFollowup = report?.recommendedActions.find((action) => action.trim())
-      ?? "Verify the prevention control and attach the result to the incident.";
-    await client.views.open({
-      trigger_id: triggerId,
-      view: {
-        type: "modal",
-        callback_id: "followup_submit",
-        private_metadata: followupMetadata(body, reportId),
-        title: { type: "plain_text", text: "Create follow-up" },
-        submit: { type: "plain_text", text: "Create" },
-        close: { type: "plain_text", text: "Cancel" },
-        blocks: [
-          {
-            type: "input",
-            block_id: "followup",
-            label: { type: "plain_text", text: "Follow-up action" },
-            element: {
-              type: "plain_text_input",
-              action_id: "text",
-              multiline: true,
-              initial_value: initialFollowup
-            }
-          }
-        ]
-      }
-    });
-  } catch (error) {
-    console.warn("Slack create_followup modal failed; sending fallback.", {
-      error: error instanceof Error ? error.message : String(error)
-    });
-    await respondWithFollowupFallback(respond);
-  }
-}
-
-export async function handleFollowupSubmitAction({ ack, body, client }: FollowupSubmitArgs): Promise<void> {
-  await ack();
-  const view = objectAt(body, "view");
-  const metadata = parseFollowupMetadata(typeof view?.private_metadata === "string" ? view.private_metadata : "");
-  const followupText = extractFollowupText(body);
-  const report = getCachedReport(metadata.reportId);
-  const channelId = metadata.channelId;
-
-  if (!channelId || !followupText) {
-    console.warn("Slack followup_submit missing channel or follow-up text.", {
-      reportId: metadata.reportId,
-      hasChannel: Boolean(channelId),
-      hasText: Boolean(followupText)
-    });
-    return;
-  }
-
-  await client.chat.postMessage({
-    channel: channelId,
-    thread_ts: metadata.threadTs,
-    text: `Follow-up created: ${followupText}`,
-    blocks: [
-      {
-        type: "section",
-        text: {
-          type: "mrkdwn",
-          text: `*Follow-up created*\n${followupText}`
-        }
-      },
-      {
-        type: "context",
-        elements: [
-          {
-            type: "mrkdwn",
-            text: report
-              ? `From case: *${report.question}*`
-              : `From detective report \`${metadata.reportId || "unknown"}\``
-          }
-        ]
-      }
-    ]
-  });
-}
-
 export async function handleSlackIntent({
   text,
   userId,
@@ -382,7 +201,8 @@ export async function handleSlackIntent({
   reply,
   postReport,
   source,
-  workspaceId = process.env.SLACK_WORKSPACE_ID ?? "unknown"
+  workspaceId = process.env.SLACK_WORKSPACE_ID ?? "unknown",
+  conversationContext
 }: SlackIntentArgs): Promise<void> {
   const trimmed = text.trim();
 
@@ -407,7 +227,7 @@ export async function handleSlackIntent({
   }
 
   if (intent.kind === "connect") {
-    await handleConnectIntent(intent.target, { userId, workspaceId, channelId }, reply);
+    await requestConnectConfirmation(intent.targets, { userId, workspaceId, channelId }, reply);
     return;
   }
 
@@ -415,9 +235,20 @@ export async function handleSlackIntent({
     const [, pendingId, ...flags] = trimmed.split(/\s+/);
     const scope: ConnectionScope = flags.includes("shared") ? "shared" : "personal";
     const accessMode: AccessMode = flags.includes("read-write") ? "read-write" : "read-only";
-    const credential = flags.includes("bearer") ? "bearer" : "none";
+    const credential = flags.includes("bearer") ? "bearer" : flags.includes("oauth") ? "oauth" : "none";
     try {
       const connection = approveRemoteConnector(pendingId ?? "", userId, { scope, accessMode, credential });
+      if (credential === "oauth") {
+        const login = await createMcpLoginLink(connection.id, userId);
+        await reply({
+          response_type: "ephemeral",
+          text: "url" in login
+            ? `Approved *${connection.name}* as ${scope} / ${accessMode}. <${login.url}|Log in to ${connection.name}> — ` +
+              "you'll approve access on the provider's own page (no app setup needed; I registered myself as its client)."
+            : `Approved *${connection.name}*, but OAuth login isn't possible: ${login.error}`
+        });
+        return;
+      }
       if (credential === "bearer") {
         const baseUrl = process.env.PUBLIC_BASE_URL;
         if (!baseUrl) {
@@ -482,9 +313,49 @@ export async function handleSlackIntent({
     return;
   }
 
-  // Investigate. Every personal source the user connected contributes tools; the shared env
-  // GitHub fallback is disabled — a person's investigation uses only what THEY connected.
-  const publicUrl = extractPublicUrl(trimmed);
+  await runInvestigation({
+    question: trimmed,
+    userId,
+    channelId,
+    workspaceId,
+    pipeline,
+    reply,
+    postReport,
+    relevantSources: intent.kind === "investigate" ? intent.relevantSources : undefined,
+    conversationContext,
+    source
+  });
+}
+
+/**
+ * The investigation path, shared by direct questions and approved follow-ups. Every personal
+ * source the user connected contributes tools; the shared env GitHub fallback is disabled — a
+ * person's investigation uses only what THEY connected.
+ */
+export async function runInvestigation({
+  question,
+  userId,
+  channelId,
+  workspaceId,
+  pipeline,
+  reply,
+  postReport,
+  relevantSources,
+  conversationContext,
+  source = "mention"
+}: {
+  question: string;
+  userId: string;
+  channelId: string;
+  workspaceId: string;
+  pipeline: InvestigationPipeline;
+  reply: SlackIntentReply;
+  postReport: (reportText: string, blocks: SlackBlock[]) => Promise<unknown>;
+  relevantSources?: string[];
+  conversationContext?: string;
+  source?: "slash" | "mention" | "followup";
+}): Promise<void> {
+  const publicUrl = extractPublicUrl(question);
   const remoteProvider = new AuthorizedConnectionToolProvider({ userId, workspaceId, channelId });
   const [remoteTools, githubToken, serviceProviders] = await Promise.all([
     remoteProvider.listAgentTools(),
@@ -492,13 +363,13 @@ export async function handleSlackIntent({
     serviceToolProvidersFor(userId)
   ]);
 
-  await reply({ response_type: "ephemeral", text: "Pinning the evidence to the board..." });
-  const { owner, repo, question } = parseOwnerRepo(trimmed);
+  await reply({ response_type: "ephemeral", text: "On it — give me a moment..." });
+  const { owner, repo, question: scopedQuestion } = parseOwnerRepo(question);
   const connectableServices = allServices()
     .filter((service) => !isServiceConnected(service, userId))
     .map((service) => service.id);
   try {
-    const report = await pipeline.investigate(question, {
+    const report = await pipeline.investigate(scopedQuestion, {
       githubToken: githubToken?.token,
       githubLogin: githubToken?.login,
       owner,
@@ -510,19 +381,87 @@ export async function handleSlackIntent({
         ...(remoteTools.length > 0 ? [remoteProvider] : []),
         ...serviceProviders
       ],
-      relevantSources: intent.kind === "investigate" ? intent.relevantSources : undefined,
+      relevantSources,
       connectableServices,
+      conversationContext,
       allowSharedGitHubFallback: false
     });
     const reportId = cacheReport(report);
-    await postReport(`Detective Report: ${report.shortAnswer}`, buildReportBlocks(report, reportId));
+    await postReport(report.shortAnswer, buildReportBlocks(report, reportId));
   } catch (error) {
-    console.error(`${source === "slash" ? "`/detective`" : "app_mention"} investigation failed.`, error);
+    console.error(`${source} investigation failed.`, error);
     await reply({
       response_type: "ephemeral",
       text: "Something went wrong investigating that. Try rephrasing the question, or ask again in a moment."
     });
   }
+}
+
+/**
+ * Connect requests confirm before acting: the bot names the brands it recognized (or will
+ * build) and waits for a Yes/No click — several services can be connected in one message.
+ */
+const pendingConnects = new Map<string, {
+  targets: string[];
+  actor: { userId: string; workspaceId: string; channelId: string };
+  expiresAt: number;
+}>();
+
+async function requestConnectConfirmation(
+  targets: string[],
+  actor: { userId: string; workspaceId: string; channelId: string },
+  reply: SlackIntentReply
+): Promise<void> {
+  const labels = targets.map((target) => {
+    const known = resolveService(target);
+    if (known) return `*${known.label}*`;
+    return extractPublicUrl(target) ? `*${target}* (remote MCP server)` : `*${target}* (I'll build the integration)`;
+  });
+  const confirmId = randomBytes(9).toString("base64url");
+  pendingConnects.set(confirmId, { targets, actor, expiresAt: Date.now() + 15 * 60_000 });
+
+  const listText = labels.length === 1 ? labels[0]! : `${labels.slice(0, -1).join(", ")} and ${labels[labels.length - 1]}`;
+  await reply({
+    response_type: "ephemeral",
+    text: `Connect ${listText}?`,
+    blocks: [
+      { type: "section", text: { type: "mrkdwn", text: `Connect ${listText}?` } },
+      {
+        type: "actions",
+        elements: [
+          { type: "button", text: { type: "plain_text", text: "Yes, connect" }, style: "primary", action_id: "connect_confirm", value: confirmId },
+          { type: "button", text: { type: "plain_text", text: "No" }, action_id: "connect_cancel", value: confirmId }
+        ]
+      }
+    ]
+  });
+}
+
+export async function executeConfirmedConnect(
+  confirmId: string,
+  clickerUserId: string,
+  reply: SlackIntentReply
+): Promise<void> {
+  const pending = pendingConnects.get(confirmId);
+  pendingConnects.delete(confirmId);
+  if (!pending || pending.expiresAt < Date.now()) {
+    await reply({ response_type: "ephemeral", replace_original: true, text: "That connect request expired — just ask again." });
+    return;
+  }
+  if (pending.actor.userId !== clickerUserId) {
+    await reply({ response_type: "ephemeral", replace_original: false, text: "Only the person who asked can confirm this." });
+    return;
+  }
+  await reply({ response_type: "ephemeral", replace_original: true, text: "Connecting..." });
+  for (const target of pending.targets) {
+    await handleConnectIntent(target, pending.actor, (message) =>
+      reply(typeof message === "string" ? { response_type: "ephemeral", replace_original: false, text: message } : { replace_original: false, ...message })
+    );
+  }
+}
+
+export function cancelPendingConnect(confirmId: string): void {
+  pendingConnects.delete(confirmId);
 }
 
 async function replyWithConnectorList(userId: string, reply: SlackIntentReply): Promise<void> {
@@ -546,7 +485,7 @@ async function replyWithConnectorList(userId: string, reply: SlackIntentReply): 
     text:
       `*Your connected services:*\n${servicesText}\n\n*Your remote connectors:*\n${remoteText}\n\n` +
       `*Your catalog connectors:*\n${connectedText}\n\n` +
-      `*Connectable services:*\n${describeServices()}\n\n` +
+      `*Integrations built so far (whenever anyone here asks, I build one):*\n${describeServices()}\n\n` +
       `*Available catalog connectors:*\n${describeCatalog()}\n\n` +
       "Connect a service by naming it (`connect <any service>` — I'll build missing integrations myself), " +
       "an experimental remote MCP server with `@agentkj connect https://…`, or a vetted one with " +
@@ -575,6 +514,17 @@ async function handleConnectIntent(
   if (remoteUrl) {
     try {
       const pending = await inspectRemoteConnector(remoteUrl, actor);
+      if (pending.requiresAuth) {
+        await reply({
+          response_type: "ephemeral",
+          text:
+            `*Experimental, untrusted remote connector*\n*Name:* ${pending.name}\n*URL:* ${pending.url}\n` +
+            "This server requires an OAuth login before it will even list its tools. Nothing has been enabled. " +
+            `To proceed, approve with \`@agentkj approve ${pending.id} oauth personal read-only\` — I'll register ` +
+            "myself as its OAuth client and send you a login link; its tools get reviewed and listed after you log in."
+        });
+        return;
+      }
       const toolLines = pending.tools.length > 0
         ? pending.tools.map((tool) => {
             const mode = tool.readOnlyHint ? "read-only" : tool.destructiveHint ? "may write/delete" : "unspecified";
@@ -588,8 +538,8 @@ async function handleConnectIntent(
           `*Experimental, untrusted remote connector*\n*Name:* ${pending.name}\n*URL:* ${pending.url}\n` +
           `*Available tools and requested permissions:*\n${toolLines}\n\n` +
           "Nothing has been enabled. Review it, then explicitly approve with " +
-          `\`@agentkj approve ${pending.id} personal read-only\`. Add \`shared\`, \`read-write\`, or ` +
-          "`bearer` only if you intend those permissions. Never paste a credential into Slack."
+          `\`@agentkj approve ${pending.id} personal read-only\`. Add \`shared\`, \`read-write\`, \`oauth\` (to log ` +
+          "in through the provider), or `bearer` only if you intend those permissions. Never paste a credential into Slack."
       });
     } catch (error) {
       await reply({
@@ -635,18 +585,32 @@ async function handleConnectIntent(
       });
       return;
     }
-    saveDynamicSpec(result.spec);
-    const service = findService(result.spec.id);
+
+    // The architect may resolve a mangled name to something that already exists — never let a
+    // typo's draft clobber a working integration; reuse the existing one instead.
+    const existing = findService(result.spec.id);
+    if (!existing) saveDynamicSpec(result.spec);
+    const service = existing ?? findService(result.spec.id);
     if (!service) {
       await reply({ response_type: "ephemeral", text: "I built the integration but couldn't load it back — try again." });
       return;
     }
-    const hosts = result.spec.apiHosts.map((host) => `\`${host}\``).join(", ");
+
+    // When what got built isn't literally what they typed, say how the name was read — the
+    // jarring alternative is "no google gocs integration" followed by "Built Google Cloud Storage".
+    const readAs = normalizeName(target) !== normalizeName(service.label)
+      && !service.aliases.some((alias) => normalizeName(alias) === normalizeName(target))
+      ? `I read *${target}* as *${service.label}* — if you meant something else, say \`connect <the right name>\`.\n`
+      : "";
+    const spec = service.dynamicSpec ?? result.spec;
+    const hosts = spec.apiHosts.map((host) => `\`${host}\``).join(", ");
+    const paywall = spec.accessNotes ? `\n⚠️ ${spec.accessNotes}` : "";
     await reply({
       response_type: "ephemeral",
       text:
-        `Built a *${service.label}* integration: ${result.spec.tools.length} read-only tool${result.spec.tools.length === 1 ? "" : "s"}, ` +
-        `talking only to ${hosts}.\n${serviceConnectText(service, actor.userId)}`
+        `${readAs}${existing ? `I already have a *${service.label}* integration` : `Built a *${service.label}* integration`}: ` +
+        `${spec.tools.length} read-only tool${spec.tools.length === 1 ? "" : "s"}, talking only to ${hosts}.${paywall}\n` +
+        serviceConnectText(service, actor.userId)
     });
     return;
   }
@@ -698,25 +662,7 @@ export function createSlackApp(pipeline: InvestigationPipeline): App | null {
 
   const app = new App({ token, appToken, signingSecret, socketMode: true });
 
-  app.command("/detective", async ({ command, ack, respond }) => {
-    await ack();
-    await handleSlackIntent({
-      text: command.text,
-      userId: command.user_id,
-      channelId: command.channel_id,
-      workspaceId: command.team_id,
-      pipeline,
-      reply: respond,
-      postReport: (text, blocks) => app.client.chat.postMessage({
-        channel: command.channel_id,
-        text,
-        blocks
-      }),
-      source: "slash"
-    });
-  });
-
-  app.event("app_mention", async ({ event, say }) => {
+  app.event("app_mention", async ({ event, say, client }) => {
     const userId = "user" in event && typeof event.user === "string" ? event.user : undefined;
     const threadTs = event.thread_ts ?? event.ts;
     const sayInThread = say as (message: Record<string, unknown>) => Promise<unknown>;
@@ -727,12 +673,31 @@ export function createSlackApp(pipeline: InvestigationPipeline): App | null {
       });
       return;
     }
+
+    // A mention inside an existing thread is usually a follow-up ("explain those commits") —
+    // fetch the prior turns so the investigation can resolve references to earlier answers.
+    // Best-effort: a missing scope or API hiccup just means no context, never a dead reply.
+    let conversationContext: string | undefined;
+    if (event.thread_ts && event.thread_ts !== event.ts) {
+      try {
+        const replies = await client.conversations.replies({ channel: event.channel, ts: event.thread_ts, limit: 12 });
+        const turns = (replies.messages ?? [])
+          .filter((message) => typeof message.text === "string" && message.text.trim() && message.ts !== event.ts)
+          .slice(-10)
+          .map((message) => `${message.bot_id ? "you (the bot)" : "user"}: ${message.text!.slice(0, 600)}`);
+        conversationContext = turns.length > 0 ? turns.join("\n") : undefined;
+      } catch (error) {
+        console.warn("Could not fetch thread context for a follow-up mention.", error);
+      }
+    }
+
     await handleSlackIntent({
       text: stripMention(event.text),
       userId,
       channelId: event.channel,
       workspaceId: event.team,
       threadTs,
+      conversationContext,
       pipeline,
       reply: (message) => typeof message === "string"
         ? sayInThread({ text: message, thread_ts: threadTs })
@@ -742,43 +707,58 @@ export function createSlackApp(pipeline: InvestigationPipeline): App | null {
     });
   });
 
-  app.action("show_evidence", async ({ ack, body, action, respond }) => {
+  app.action("connect_confirm", async ({ ack, action, body, respond }) => {
+    await ack();
+    const confirmId = "value" in action ? String(action.value) : "";
+    const clicker = stringAt(objectAt(body as unknown as SlackActionBody, "user"), "id") ?? "";
+    await executeConfirmedConnect(confirmId, clicker, respond as SlackIntentReply);
+  });
+
+  app.action("connect_cancel", async ({ ack, action, respond }) => {
+    await ack();
+    cancelPendingConnect("value" in action ? String(action.value) : "");
+    await respond({ response_type: "ephemeral", replace_original: true, text: "Okay, not connecting anything." });
+  });
+
+  // The user approved a suggested follow-up — the agent executes it itself as a fresh
+  // investigation in the same thread, carrying the original report as context.
+  app.action("followup_do", async ({ ack, action, body, respond, client }) => {
     await ack();
     const report = getCachedReport("value" in action ? String(action.value) : "");
-    if (report) await respond({ response_type: "ephemeral", blocks: buildEvidenceBlocks(report) });
+    const actionBody = body as unknown as SlackActionBody;
+    const userId = stringAt(objectAt(actionBody, "user"), "id");
+    const channelId = stringAt(objectAt(actionBody, "channel"), "id")
+      ?? stringAt(objectAt(actionBody, "container"), "channel_id");
+    const threadTs = stringAt(objectAt(actionBody, "message"), "thread_ts")
+      ?? stringAt(objectAt(actionBody, "message"), "ts")
+      ?? stringAt(objectAt(actionBody, "container"), "message_ts");
+    const workspaceId = stringAt(objectAt(actionBody, "team"), "id") ?? process.env.SLACK_WORKSPACE_ID ?? "unknown";
+    const followup = report?.recommendedActions.find((candidate) => candidate.trim());
+
+    if (!report || !followup || !userId || !channelId) {
+      await respond({ response_type: "ephemeral", replace_original: false, text: "That follow-up expired — ask me again." });
+      return;
+    }
+    await runInvestigation({
+      question: followup,
+      userId,
+      channelId,
+      workspaceId,
+      pipeline,
+      reply: (message) => respond(typeof message === "string"
+        ? { response_type: "ephemeral", replace_original: false, text: message }
+        : { replace_original: false, ...message }),
+      postReport: (text, blocks) => client.chat.postMessage({ channel: channelId, thread_ts: threadTs, text, blocks }),
+      conversationContext:
+        `The user clicked "Do it" on a follow-up you suggested. Original question: ${report.question}\n` +
+        `Your earlier answer: ${report.shortAnswer}\nNow execute the follow-up: ${followup}`,
+      source: "followup"
+    });
   });
 
-  app.action("show_timeline", async ({ ack, action, respond }) => {
+  app.action("followup_skip", async ({ ack, respond }) => {
     await ack();
-    const report = getCachedReport("value" in action ? String(action.value) : "");
-    if (report) await respond({ response_type: "ephemeral", blocks: buildTimelineBlocks(report) });
-  });
-
-  app.action("create_followup", async ({ ack, action, body, client, respond }) => {
-    await handleCreateFollowupAction({
-      ack,
-      action: action as FollowupActionArgs["action"],
-      body: body as unknown as SlackActionBody,
-      client: client as unknown as FollowupActionArgs["client"],
-      respond: respond as FollowupActionArgs["respond"]
-    });
-  });
-
-  app.view("followup_submit", async ({ ack, body, client }) => {
-    await handleFollowupSubmitAction({
-      ack,
-      body: body as unknown as SlackActionBody,
-      client: client as unknown as FollowupSubmitArgs["client"]
-    });
-  });
-
-  app.action("mark_solved", async ({ ack, respond }) => {
-    await ack();
-    await respond({
-      response_type: "in_channel",
-      replace_original: false,
-      text: "✅ Case marked solved. The evidence board remains available for the record."
-    });
+    await respond({ response_type: "ephemeral", replace_original: false, text: "Okay, skipping that." });
   });
 
   return app;

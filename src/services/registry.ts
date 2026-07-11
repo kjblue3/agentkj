@@ -149,6 +149,26 @@ function normalizeText(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]/g, "");
 }
 
+/** Plain two-row Levenshtein, only ever run on short normalized alias strings. */
+function editDistance(a: string, b: string): number {
+  if (Math.abs(a.length - b.length) > 2) return 3;
+  let previous = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    const current = [i];
+    for (let j = 1; j <= b.length; j++) {
+      current[j] = Math.min(previous[j]! + 1, current[j - 1]! + 1, previous[j - 1]! + (a[i - 1] === b[j - 1] ? 0 : 1));
+    }
+    previous = current;
+  }
+  return previous[b.length]!;
+}
+
+/** Tolerance scaled to alias length: "googlegocs" should find "googledocs", but "gh" must not fuzz. */
+function withinTypoDistance(candidate: string, alias: string): boolean {
+  if (alias.length < 5) return false;
+  return editDistance(candidate, alias) <= (alias.length >= 10 ? 2 : 1);
+}
+
 /**
  * Matches free text from the intent router — a service name in any phrasing, or a pasted URL
  * whose hostname belongs to a known service — against the known services. Deliberately fuzzy:
@@ -167,13 +187,21 @@ export function resolveService(text: string): ServiceDefinition | undefined {
   })();
   const normalized = normalizeText(trimmed);
 
-  return allServices().find((service) =>
+  const services = allServices();
+  const exact = services.find((service) =>
     service.aliases.some((alias) => {
       const normalizedAlias = normalizeText(alias);
       if (!normalizedAlias) return false;
       if (hostname !== undefined) return hostname.includes(normalizedAlias.replace(/com$/, ""));
       return normalized.includes(normalizedAlias);
     })
+  );
+  if (exact || hostname !== undefined) return exact;
+
+  // Typo pass: "google gocs" must find an existing google-docs integration rather than send the
+  // architect off to build whatever product the mangled letters happen to resemble.
+  return services.find((service) =>
+    service.aliases.some((alias) => withinTypoDistance(normalized, normalizeText(alias)))
   );
 }
 

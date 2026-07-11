@@ -1,13 +1,7 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { cacheReport } from "../src/slack/reportCache.js";
+import { beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import type { InvestigationResult } from "../src/types/schemas.js";
 import { createUserConnectorCredentialIntent, setUserConnector } from "../src/auth/tokenStore.js";
-import {
-  FOLLOWUP_FALLBACK_MESSAGE,
-  handleCreateFollowupAction,
-  handleFollowupSubmitAction,
-  handleSlackIntent
-} from "../src/slack/app.js";
+import { executeConfirmedConnect, handleSlackIntent } from "../src/slack/app.js";
 
 vi.mock("../src/auth/tokenStore.js", async () => {
   const userConnectors = new Map<string, Map<string, unknown>>();
@@ -34,103 +28,6 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
-function createArgs(overrides: {
-  triggerId?: string;
-  openRejects?: boolean;
-} = {}) {
-  const ack = vi.fn().mockResolvedValue(undefined);
-  const respond = vi.fn().mockResolvedValue(undefined);
-  const open = overrides.openRejects
-    ? vi.fn().mockRejectedValue(new Error("expired_trigger_id"))
-    : vi.fn().mockResolvedValue({ ok: true });
-
-  return {
-    ack,
-    action: { action_id: "create_followup", value: "report-123" },
-    body: {
-      type: "block_actions",
-      trigger_id: overrides.triggerId,
-      user: { id: "U123" },
-      team: { id: "T123" },
-      channel: { id: "C123" },
-      message: { ts: "1710000000.000000" },
-      container: { type: "message", channel_id: "C123", message_ts: "1710000000.000000" }
-    },
-    client: { views: { open } },
-    respond
-  };
-}
-
-describe("handleCreateFollowupAction", () => {
-  it("opens the modal when Slack includes a trigger_id", async () => {
-    const args = createArgs({ triggerId: "trigger-123" });
-
-    await handleCreateFollowupAction(args);
-
-    expect(args.ack).toHaveBeenCalledOnce();
-    expect(args.client.views.open).toHaveBeenCalledWith(expect.objectContaining({
-      trigger_id: "trigger-123",
-      view: expect.objectContaining({
-        type: "modal",
-        private_metadata: expect.stringContaining("report-123")
-      })
-    }));
-    expect(args.respond).not.toHaveBeenCalled();
-  });
-
-  it("logs a summarized action payload without dumping the raw Slack body", async () => {
-    const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
-    const args = createArgs({ triggerId: "trigger-123" });
-
-    await handleCreateFollowupAction(args);
-
-    expect(info).toHaveBeenCalledWith(
-      "Slack create_followup action received",
-      expect.objectContaining({
-        actionId: "create_followup",
-        reportId: "report-123",
-        bodyType: "block_actions",
-        userId: "U123",
-        teamId: "T123",
-        channelId: "C123",
-        messageTs: "1710000000.000000",
-        hasTriggerId: true,
-        hasResponseUrl: false
-      })
-    );
-    expect(info.mock.calls[0]?.[1]).not.toHaveProperty("trigger_id");
-    expect(info.mock.calls[0]?.[1]).not.toHaveProperty("message");
-
-    info.mockRestore();
-  });
-
-  it("responds ephemerally when trigger_id is missing", async () => {
-    const args = createArgs();
-
-    await handleCreateFollowupAction(args);
-
-    expect(args.client.views.open).not.toHaveBeenCalled();
-    expect(args.respond).toHaveBeenCalledWith({
-      response_type: "ephemeral",
-      replace_original: false,
-      text: FOLLOWUP_FALLBACK_MESSAGE
-    });
-  });
-
-  it("responds ephemerally when opening the modal fails", async () => {
-    const args = createArgs({ triggerId: "trigger-123", openRejects: true });
-
-    await handleCreateFollowupAction(args);
-
-    expect(args.client.views.open).toHaveBeenCalledOnce();
-    expect(args.respond).toHaveBeenCalledWith({
-      response_type: "ephemeral",
-      replace_original: false,
-      text: FOLLOWUP_FALLBACK_MESSAGE
-    });
-  });
-});
-
 function report(): InvestigationResult {
   return {
     question: "Why is checkout slow?",
@@ -144,43 +41,21 @@ function report(): InvestigationResult {
   };
 }
 
-describe("handleFollowupSubmitAction", () => {
-  it("posts the submitted follow-up back to the report thread", async () => {
-    const reportId = cacheReport(report());
-    const ack = vi.fn().mockResolvedValue(undefined);
-    const postMessage = vi.fn().mockResolvedValue({ ok: true });
-
-    await handleFollowupSubmitAction({
-      ack,
-      client: { chat: { postMessage } },
-      body: {
-        view: {
-          private_metadata: JSON.stringify({
-            reportId,
-            channelId: "C123",
-            threadTs: "1710000000.000000"
-          }),
-          state: {
-            values: {
-              followup: {
-                text: {
-                  value: "Add a checkout regression test."
-                }
-              }
-            }
-          }
-        }
-      }
-    });
-
-    expect(ack).toHaveBeenCalledOnce();
-    expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({
-      channel: "C123",
-      thread_ts: "1710000000.000000",
-      text: "Follow-up created: Add a checkout regression test."
-    }));
+/** Pulls the confirm-button value out of the Yes/No prompt the connect flow replies with. */
+function confirmIdFrom(reply: Mock): string {
+  const call = reply.mock.calls.find(([message]) => {
+    const blocks = (message as { blocks?: Array<{ type: string }> }).blocks;
+    return Array.isArray(blocks) && blocks.some((block) => block.type === "actions");
   });
-});
+  const blocks = (call![0] as { blocks: Array<{ type: string; elements?: Array<{ value?: string }> }> }).blocks;
+  return blocks.find((block) => block.type === "actions")!.elements![0]!.value!;
+}
+
+async function confirmConnect(reply: Mock): Promise<Mock> {
+  const confirmed = vi.fn().mockResolvedValue(undefined);
+  await executeConfirmedConnect(confirmIdFrom(reply), "U123", confirmed);
+  return confirmed;
+}
 
 describe("handleSlackIntent", () => {
   beforeEach(() => {
@@ -189,7 +64,7 @@ describe("handleSlackIntent", () => {
     process.env.GITHUB_OAUTH_CLIENT_SECRET = "test-client-secret";
   });
 
-  it("lets app mentions show the GitHub connect link", async () => {
+  it("asks to confirm, then sends the GitHub connect link on Yes", async () => {
     process.env.PUBLIC_BASE_URL = "https://agentkj.example";
     const reply = vi.fn().mockResolvedValue(undefined);
 
@@ -206,6 +81,11 @@ describe("handleSlackIntent", () => {
 
     expect(reply).toHaveBeenCalledWith(expect.objectContaining({
       response_type: "ephemeral",
+      text: expect.stringContaining("Connect *GitHub*?")
+    }));
+
+    const confirmed = await confirmConnect(reply);
+    expect(confirmed).toHaveBeenCalledWith(expect.objectContaining({
       text: expect.stringContaining("Connect your GitHub")
     }));
   });
@@ -216,7 +96,7 @@ describe("handleSlackIntent", () => {
     "Connect GitHub please",
     "connect my github account",
     "connect-github"
-  ])("routes %j to the GitHub connect link", async (text) => {
+  ])("routes %j to the GitHub confirmation", async (text) => {
     process.env.PUBLIC_BASE_URL = "https://agentkj.example";
     const reply = vi.fn().mockResolvedValue(undefined);
 
@@ -233,18 +113,18 @@ describe("handleSlackIntent", () => {
 
     expect(reply).toHaveBeenCalledWith(expect.objectContaining({
       response_type: "ephemeral",
-      text: expect.stringContaining("Connect your GitHub")
+      text: expect.stringContaining("Connect *GitHub*?")
     }));
   });
 
-  it("tries to synthesize an integration for an unknown connect target", async () => {
+  it("confirms multiple targets in one message and connects each on Yes", async () => {
+    process.env.PUBLIC_BASE_URL = "https://agentkj.example";
     const reply = vi.fn().mockResolvedValue(undefined);
 
     await handleSlackIntent({
-      text: "connect flurbo",
+      text: "connect github and flurbo",
       userId: "U123",
       channelId: "C123",
-      threadTs: "1710000000.000000",
       pipeline: { investigate: vi.fn() } as never,
       reply,
       postReport: vi.fn(),
@@ -252,13 +132,37 @@ describe("handleSlackIntent", () => {
     });
 
     expect(reply).toHaveBeenCalledWith(expect.objectContaining({
-      response_type: "ephemeral",
-      text: expect.stringContaining("give me a moment to build one")
+      text: expect.stringContaining("Connect *GitHub* and *flurbo* (I'll build the integration)?")
     }));
-    // No LLM is configured in tests, so the architect step reports that honestly.
-    expect(reply).toHaveBeenCalledWith(expect.objectContaining({
-      response_type: "ephemeral",
+
+    const confirmed = await confirmConnect(reply);
+    expect(confirmed).toHaveBeenCalledWith(expect.objectContaining({
+      text: expect.stringContaining("Connect your GitHub")
+    }));
+    // No LLM is configured in tests, so the architect step reports the second target honestly.
+    expect(confirmed).toHaveBeenCalledWith(expect.objectContaining({
       text: expect.stringContaining("can't synthesize new integrations right now")
+    }));
+  });
+
+  it("refuses confirmation clicks from someone other than the requester", async () => {
+    process.env.PUBLIC_BASE_URL = "https://agentkj.example";
+    const reply = vi.fn().mockResolvedValue(undefined);
+
+    await handleSlackIntent({
+      text: "connect github",
+      userId: "U123",
+      channelId: "C123",
+      pipeline: { investigate: vi.fn() } as never,
+      reply,
+      postReport: vi.fn(),
+      source: "mention"
+    });
+
+    const outsider = vi.fn().mockResolvedValue(undefined);
+    await executeConfirmedConnect(confirmIdFrom(reply), "U999", outsider);
+    expect(outsider).toHaveBeenCalledWith(expect.objectContaining({
+      text: expect.stringContaining("Only the person who asked")
     }));
   });
 
@@ -299,9 +203,10 @@ describe("handleSlackIntent", () => {
       postReport: vi.fn(),
       source: "mention"
     });
+    const confirmed = await confirmConnect(reply);
 
     expect(setUserConnector).not.toHaveBeenCalled();
-    expect(reply).toHaveBeenCalledWith(expect.objectContaining({
+    expect(confirmed).toHaveBeenCalledWith(expect.objectContaining({
       text: expect.stringContaining("I won't collect connector credentials in Slack")
     }));
   });
@@ -319,10 +224,10 @@ describe("handleSlackIntent", () => {
       postReport: vi.fn(),
       source: "mention"
     });
+    const confirmed = await confirmConnect(reply);
 
     expect(createUserConnectorCredentialIntent).toHaveBeenCalledWith("U123", "filesystem");
-    expect(reply).toHaveBeenCalledWith(expect.objectContaining({
-      response_type: "ephemeral",
+    expect(confirmed).toHaveBeenCalledWith(expect.objectContaining({
       text: expect.stringContaining("/auth/catalog-connectors/catalog-secret")
     }));
   });
@@ -349,7 +254,7 @@ describe("handleSlackIntent", () => {
       repo: "casual-timeline"
     }));
     expect(postReport).toHaveBeenCalledWith(
-      "Detective Report: The checkout loop regressed.",
+      "The checkout loop regressed.",
       expect.any(Array)
     );
   });

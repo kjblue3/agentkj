@@ -5,9 +5,7 @@ import { fallbackSynthesis } from "../src/investigation/fallbackSynthesis.js";
 import { InvestigationPipeline } from "../src/investigation/pipeline.js";
 import type { Synthesizer } from "../src/openai/synthesizer.js";
 import {
-  buildEvidenceBlocks,
   buildReportBlocks,
-  buildTimelineBlocks,
   selectDisplayEvidence,
   selectDisplayTimeline
 } from "../src/slack/blocks.js";
@@ -44,32 +42,18 @@ function allBlockText(blocks: unknown[]): string {
 }
 
 describe("Slack Block Kit rendering", () => {
-  it("renders the main report with clean section boundaries", async () => {
+  it("renders like a normal message: answer, source links, and one follow-up — no board", async () => {
     const report = await pipeline.investigate("Why did checkout latency spike?");
     const blocks = buildReportBlocks(report, "report-123") as Array<{ type: string }>;
     const text = allBlockText(blocks);
 
-    expect(blocks.map((block) => block.type)).toEqual([
-      "header",
-      "context",
-      "divider",
-      "section",
-      "section",
-      "divider",
-      "section",
-      "section",
-      "divider",
-      "section",
-      "actions"
-    ]);
-    expect(text).toContain("*Case:* Why did checkout latency spike?");
-    expect(text).toContain("*Sources:* demo");
-    expect(text).toContain("*Short answer*");
-    expect(text).toContain("*Likely root cause*");
-    expect(text).toContain("*Causal timeline*");
-    expect(text).toContain("*Evidence board*");
-    expect(text).toContain("*Next moves*");
-    expect(text).not.toMatch(/Detective ReportCase|Confidence:\*Short answer|root cause\*Causal/i);
+    expect(blocks.map((block) => block.type)).toEqual(["section", "context", "section", "actions"]);
+    expect(text).toContain(report.shortAnswer.slice(0, 60));
+    expect(text).toContain("Sources:");
+    expect(text).toContain("Want me to follow up?");
+    expect(text).not.toContain("Detective Report");
+    expect(text).not.toContain("*Evidence board*");
+    expect(text).not.toContain("*Causal timeline*");
   });
 
   it("renders a no-evidence result as an honest reply with a connect suggestion, not a report skeleton", () => {
@@ -93,7 +77,7 @@ describe("Slack Block Kit rendering", () => {
     expect(text).toContain("connect acmefit");
   });
 
-  it("keeps checkout evidence board free of Redis and coffee-machine noise", async () => {
+  it("keeps the sources line free of Redis and coffee-machine noise", async () => {
     const report = await pipeline.investigate("Why did checkout latency spike?");
     const redis = demoEvidence.find((item) => item.id === "docs-redis-1")!;
     const coffee = demoEvidence.find((item) => item.id === "slack-noise-1")!;
@@ -103,20 +87,11 @@ describe("Slack Block Kit rendering", () => {
     };
 
     const selectedIds = selectDisplayEvidence(noisyReport).map((item) => item.id);
-    const evidenceText = allBlockText(buildEvidenceBlocks(noisyReport));
+    const sourcesText = allBlockText(buildReportBlocks(noisyReport, "report-123"));
 
     expect(selectedIds).not.toContain("docs-redis-1");
     expect(selectedIds).not.toContain("slack-noise-1");
-    expect(evidenceText).not.toMatch(/redis|coffee machine/i);
-    expect(evidenceText).toMatch(/PR #1842|tax_rule|checkout/i);
-  });
-
-  it("shows only timeline events tied to displayed evidence", async () => {
-    const report = await pipeline.investigate("Why did checkout latency spike?");
-    const timelineText = allBlockText(buildTimelineBlocks(report));
-
-    expect(timelineText).toMatch(/checkout|tax_rule|PR #1842/i);
-    expect(timelineText).not.toMatch(/redis|coffee machine/i);
+    expect(sourcesText).not.toMatch(/coffee machine/i);
   });
 
   it("keeps displayed timeline events chronological", () => {
@@ -162,15 +137,13 @@ describe("Slack Block Kit rendering", () => {
     ]);
   });
 
-  it("keeps the follow-up button wired to the report id", async () => {
+  it("keeps the executable follow-up buttons wired to the report id", async () => {
     const report = await pipeline.investigate("Why did checkout latency spike?");
     const actions = buildReportBlocks(report, "report-123").find((block) => block.type === "actions") as {
       elements: Array<{ action_id?: string; value?: string }>;
     };
 
-    expect(actions.elements).toContainEqual(expect.objectContaining({
-      action_id: "create_followup",
-      value: "report-123"
-    }));
+    expect(actions.elements).toContainEqual(expect.objectContaining({ action_id: "followup_do", value: "report-123" }));
+    expect(actions.elements).toContainEqual(expect.objectContaining({ action_id: "followup_skip", value: "report-123" }));
   });
 });

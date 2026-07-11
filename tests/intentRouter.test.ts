@@ -40,10 +40,18 @@ beforeAll(() => {
 });
 
 describe("heuristicIntent (no-LLM fallback)", () => {
-  it("routes connect phrasings to connect with the remainder as target", () => {
-    expect(heuristicIntent("connect github")).toEqual({ kind: "connect", target: "github" });
-    expect(heuristicIntent("connect to my acmefit")).toEqual({ kind: "connect", target: "to my acmefit" });
-    expect(heuristicIntent("connect-github")).toEqual({ kind: "connect", target: "github" });
+  it("routes connect phrasings to connect with the remainder as targets", () => {
+    expect(heuristicIntent("connect github")).toEqual({ kind: "connect", targets: ["github"] });
+    expect(heuristicIntent("connect to my acmefit")).toEqual({ kind: "connect", targets: ["to my acmefit"] });
+    expect(heuristicIntent("connect-github")).toEqual({ kind: "connect", targets: ["github"] });
+  });
+
+  it("splits multi-service connect requests into separate targets", () => {
+    expect(heuristicIntent("connect github and acmefit")).toEqual({ kind: "connect", targets: ["github", "acmefit"] });
+    expect(heuristicIntent("connect github, acmefit & flurbo")).toEqual({
+      kind: "connect",
+      targets: ["github", "acmefit", "flurbo"]
+    });
   });
 
   it("recognizes the bot-issued command shapes", () => {
@@ -66,7 +74,7 @@ describe("classifyIntent", () => {
       null,
       "test-model"
     );
-    expect(intent).toEqual({ kind: "connect", target: "acmefit" });
+    expect(intent).toEqual({ kind: "connect", targets: ["acmefit"] });
   });
 
   it("drops relevantSources ids the user has not actually connected", async () => {
@@ -98,7 +106,7 @@ describe("classifyIntent", () => {
       client as never,
       "test-model"
     );
-    expect(intent).toEqual({ kind: "connect", target: "github" });
+    expect(intent).toEqual({ kind: "connect", targets: ["github"] });
   });
 });
 
@@ -111,6 +119,11 @@ describe("resolveService (over synthesized integrations)", () => {
   it("matches pasted URLs by hostname only", () => {
     expect(resolveService("https://acmefit.example/athletes/12345#week")?.id).toBe("acmefit");
     expect(resolveService("https://remote-mcp.example/acmefit-in-the-path")).toBeUndefined();
+  });
+
+  it("resolves close typos to the existing integration instead of triggering a rebuild", () => {
+    expect(resolveService("acmefitt")?.id).toBe("acmefit");
+    expect(resolveService("acme fitt")?.id).toBe("acmefit");
   });
 
   it("matches nothing for unknown services", () => {
