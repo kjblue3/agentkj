@@ -102,14 +102,14 @@ describe("Slack Block Kit rendering", () => {
       likelyRootCause: "The display timeline was not sorted after filtering.",
       evidence: [
         {
-          id: "github:commit:one",
-          source: "github",
+          id: "code:change:one",
+          source: "code",
           title: "Commit one",
           body: "casual timeline sort change",
           url: "https://example.com/one",
           timestamp: "2026-07-07T12:00:00.000Z",
           entities: ["casual-timeline"],
-          tags: ["github"],
+          tags: ["code"],
           confidence: 0.8
         }
       ],
@@ -118,13 +118,13 @@ describe("Slack Block Kit rendering", () => {
           timestamp: "2026-07-07T12:00:00.000Z",
           title: "Second event",
           summary: "Later event",
-          evidenceIds: ["github:commit:one"]
+          evidenceIds: ["code:change:one"]
         },
         {
           timestamp: "2026-07-07T11:00:00.000Z",
           title: "First event",
           summary: "Earlier event",
-          evidenceIds: ["github:commit:one"]
+          evidenceIds: ["code:change:one"]
         }
       ],
       openQuestions: [],

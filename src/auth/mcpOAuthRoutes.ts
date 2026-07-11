@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import type { Express } from "express";
 import { completeMcpOAuth, getConnection } from "../mcp/connections.js";
 import { createPkce, discoverAuthServer, ensureClientRegistration } from "../mcp/mcpOAuth.js";
+import { decryptSecret, encryptSecret, nonceHash, stateDatabase } from "../state/database.js";
 
 /**
  * Per-user OAuth login for remote MCP connections. The whole flow is machine-negotiated —
@@ -22,7 +23,26 @@ interface LoginSession {
   expiresAt: number;
 }
 
-const sessions = new Map<string, LoginSession>();
+function saveSession(state: string, session: LoginSession): void {
+  stateDatabase().prepare(`
+    INSERT INTO remote_oauth_sessions (state_hash, session_encrypted, expires_at)
+    VALUES (?, ?, ?)
+  `).run(nonceHash(state), encryptSecret(JSON.stringify(session)), new Date(session.expiresAt).toISOString());
+}
+
+function consumeSession(state: string): LoginSession | undefined {
+  const db = stateDatabase();
+  return db.transaction(() => {
+    const row = db.prepare(`
+      SELECT session_encrypted FROM remote_oauth_sessions
+      WHERE state_hash = ? AND consumed_at IS NULL AND expires_at > ?
+    `).get(nonceHash(state), new Date().toISOString()) as { session_encrypted: string } | undefined;
+    if (!row) return undefined;
+    db.prepare("UPDATE remote_oauth_sessions SET consumed_at = ? WHERE state_hash = ?")
+      .run(new Date().toISOString(), nonceHash(state));
+    return JSON.parse(decryptSecret(row.session_encrypted)) as LoginSession;
+  })();
+}
 
 export async function createMcpLoginLink(
   connectionId: string,
@@ -52,7 +72,7 @@ export async function createMcpLoginLink(
 
   const { verifier, challenge } = createPkce();
   const state = randomBytes(24).toString("base64url");
-  sessions.set(state, {
+  saveSession(state, {
     connectionId,
     slackUserId,
     verifier,
@@ -84,8 +104,7 @@ export function registerMcpOAuthRoutes(app: Express): void {
     const state = typeof request.query.state === "string" ? request.query.state : "";
     const code = typeof request.query.code === "string" ? request.query.code : "";
     const providerError = typeof request.query.error === "string" ? request.query.error : "";
-    const session = sessions.get(state);
-    sessions.delete(state);
+    const session = consumeSession(state);
 
     if (!session || session.expiresAt < Date.now()) {
       response.status(400).send(page("Login expired", "This login link is invalid or expired. Ask the bot for a fresh one in Slack."));

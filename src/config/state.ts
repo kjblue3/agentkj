@@ -11,3 +11,7 @@ export function stateFilePath(
     : path.resolve(cwd, "data");
   return path.join(directory, filename);
 }
+
+export function stateDirectory(env: NodeJS.ProcessEnv = process.env, cwd = process.cwd()): string {
+  return path.resolve(cwd, env.STATE_DIR?.trim() || "data");
+}

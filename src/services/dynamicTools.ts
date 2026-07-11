@@ -1,8 +1,9 @@
 import type { ChatCompletionTool } from "openai/resources/chat/completions";
 import type { AgentToolProvider } from "../agent/toolProvider.js";
-import type { ServiceToken } from "../auth/tokenStore.js";
+import type { StoredServiceToken } from "../state/repositories.js";
 import { truncate } from "../connectors/connectorUtils.js";
 import type { EvidenceItem } from "../types/schemas.js";
+import { ConnectionAccessError } from "../core/context.js";
 import type { DynamicServiceSpec, DynamicTool } from "./dynamicSpec.js";
 
 const RESPONSE_CHAR_LIMIT = 3500;
@@ -18,7 +19,9 @@ const REQUEST_TIMEOUT_MS = 15_000;
 export class DynamicToolProvider implements AgentToolProvider {
   constructor(
     private readonly spec: DynamicServiceSpec,
-    private readonly token: ServiceToken
+    private readonly token: StoredServiceToken,
+    private readonly connectionId = `${spec.id}:unknown`,
+    private readonly ownerUserId = "unknown"
   ) {}
 
   async listAgentTools(): Promise<ChatCompletionTool[]> {
@@ -56,26 +59,25 @@ export class DynamicToolProvider implements AgentToolProvider {
         // missing scopes, dev-mode allowlists. Relay it verbatim so the agent tells the user the
         // truth instead of guessing "reconnect" (a 403 is usually NOT a login problem).
         const reason = (await response.text()).slice(0, 300);
-        return {
-          error:
-            `${this.spec.label} refused access (HTTP ${response.status})` +
-            (reason ? `: "${reason}"` : ".") +
-            (response.status === 401
-              ? " The stored login may have expired — reconnecting may fix it."
-              : " This looks like a provider-side restriction (plan/paywall/permissions), not a login problem — tell the user exactly what the provider said.")
-        };
+        throw new ConnectionAccessError(
+          response.status === 401 ? "authorization_required" : "scope_missing",
+          `${this.spec.label} refused access${reason ? `: ${reason}` : "."}`,
+          this.connectionId,
+          this.ownerUserId
+        );
       }
       if (!response.ok) return { error: `${this.spec.label} returned HTTP ${response.status}.` };
       const body = truncate(await response.text(), RESPONSE_CHAR_LIMIT);
       return { data: body, evidence: [this.toEvidence(tool, url, body)] };
     } catch (error) {
+      if (error instanceof ConnectionAccessError) throw error;
       return { error: error instanceof Error ? error.message : String(error) };
     }
   }
 
   /** Namespaced so two services' synthesized tools can never collide. */
   private qualifiedName(tool: DynamicTool): string {
-    return `${this.spec.id.replace(/-/g, "_")}__${tool.name}`;
+    return `connection_${this.connectionId.replace(/[^a-zA-Z0-9_-]/g, "_")}__${tool.name}`.slice(0, 64);
   }
 
   private buildUrl(tool: DynamicTool, args: Record<string, unknown>): string {
@@ -109,13 +111,13 @@ export class DynamicToolProvider implements AgentToolProvider {
 
   private toEvidence(tool: DynamicTool, url: string, body: string): EvidenceItem {
     return {
-      id: `${this.spec.id}:${tool.name}:${Date.now().toString(36)}`,
+      id: `${this.connectionId}:${tool.name}:${Date.now().toString(36)}`,
       source: this.spec.id,
       title: `${this.spec.label}: ${tool.name.replace(/_/g, " ")}`,
       body: body || `${this.spec.label} returned an empty response.`,
       url,
       timestamp: new Date().toISOString(),
-      entities: [this.spec.label],
+      entities: [this.spec.label, this.ownerUserId],
       tags: [this.spec.id, "live-api"],
       confidence: 0.85
     };

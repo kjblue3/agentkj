@@ -30,10 +30,6 @@ const weakDisplayTokens = new Set([
 
 const sourceIcon: Record<string, string> = {
   slack: "💬",
-  github: "🔀",
-  jira: "🎫",
-  docs: "📄",
-  incident: "🚨",
   web: "🌐"
 };
 

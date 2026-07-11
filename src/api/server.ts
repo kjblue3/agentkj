@@ -2,7 +2,6 @@ import express from "express";
 import { z } from "zod";
 import type { InvestigationPipeline } from "../investigation/pipeline.js";
 import { demoQuestions } from "../data/demoData.js";
-import { registerGitHubOAuthRoutes } from "../auth/githubOAuth.js";
 import { registerMcpOAuthRoutes } from "../auth/mcpOAuthRoutes.js";
 import { registerServiceOAuthRoutes } from "../auth/serviceOAuth.js";
 import { registerServiceSetupRoutes } from "../auth/serviceSetup.js";
@@ -13,7 +12,6 @@ const requestSchema = z.object({ question: z.string().trim().min(3).max(500) });
 export function createApi(pipeline: InvestigationPipeline) {
   const app = express();
   app.use(express.json({ limit: "32kb" }));
-  registerGitHubOAuthRoutes(app);
   registerServiceOAuthRoutes(app);
   registerServiceSetupRoutes(app);
   registerMcpOAuthRoutes(app);

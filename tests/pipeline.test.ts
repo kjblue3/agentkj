@@ -20,7 +20,7 @@ describe("investigation pipeline", () => {
   it.each(demoQuestions)("returns a meaningful timeline for: %s", async (question) => {
     const result = await pipeline.investigate(question);
     expect(result.sourceMode).toBe("demo");
-    expect(result.connectors).toContain("Slack messages");
+    expect(result.connectors).toContain("Demo slack");
     expect(result.evidence.length).toBeGreaterThanOrEqual(4);
     expect(result.timeline.length).toBeGreaterThanOrEqual(4);
     expect(result.shortAnswer.length).toBeGreaterThan(40);

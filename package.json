@@ -9,7 +9,6 @@
     "start": "node dist/src/app.js",
     "build": "tsc -p tsconfig.json",
     "seed": "tsx src/data/seed.ts",
-    "seed:github-demo": "tsx src/data/githubDemoSeed.ts",
     "seed:slack-demo": "tsx src/data/slackDemoSeed.ts",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -19,12 +18,14 @@
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@slack/bolt": "^4.4.0",
     "@slack/types": "^2.21.1",
+    "better-sqlite3": "^12.11.1",
     "dotenv": "^17.2.3",
     "express": "^5.1.0",
     "openai": "^6.15.0",
     "zod": "^4.1.13"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
     "@types/express": "^5.0.5",
     "@types/node": "^24.10.1",
     "@types/supertest": "^6.0.3",

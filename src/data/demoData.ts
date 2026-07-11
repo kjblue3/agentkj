@@ -10,15 +10,15 @@ export const demoEvidence: EvidenceItem[] = [
     entities: ["checkout-service", "tax_rule", "p95"], tags: ["checkout", "latency", "database", "n+1"], confidence: 0.96
   },
   {
-    id: "github-checkout-1", source: "github", title: "PR #1842: regional tax calculation",
+    id: "code-checkout-1", source: "code", title: "Change #1842: regional tax calculation",
     body: "The PR moved tax rule lookup inside the cart item loop. Review noted the query count concern, but load-test coverage for carts over 20 items was deferred.",
-    url: url("github", "1842"), author: "Leo Park", timestamp: "2026-05-14T15:42:00.000Z",
+    url: url("code", "1842"), author: "Leo Park", timestamp: "2026-05-14T15:42:00.000Z",
     entities: ["checkout-service", "tax_rule", "PR #1842"], tags: ["checkout", "n+1", "database", "deploy"], confidence: 0.99
   },
   {
-    id: "jira-checkout-1", source: "jira", title: "CX-771: checkout timeouts for wholesale carts",
+    id: "tickets-checkout-1", source: "tickets", title: "CX-771: checkout timeouts for wholesale carts",
     body: "Support linked 43 complaints to carts with many line items. Customers saw payment spinner timeouts beginning after the May 14 release.",
-    url: url("jira", "CX-771"), author: "Nina Shah", timestamp: "2026-05-14T16:35:00.000Z",
+    url: url("tickets", "CX-771"), author: "Nina Shah", timestamp: "2026-05-14T16:35:00.000Z",
     entities: ["checkout", "wholesale carts", "CX-771"], tags: ["customer", "latency", "timeout"], confidence: 0.9
   },
   {
@@ -40,15 +40,15 @@ export const demoEvidence: EvidenceItem[] = [
     entities: ["recommendations", "Data Platform", "consent events"], tags: ["recommendations", "launch", "privacy", "dependency"], confidence: 0.94
   },
   {
-    id: "jira-recs-1", source: "jira", title: "REC-310: production launch readiness",
+    id: "tickets-recs-1", source: "tickets", title: "REC-310: production launch readiness",
     body: "Launch is blocked until DP-882 supplies consent-filtered training events and the offline relevance threshold is revalidated.",
-    url: url("jira", "REC-310"), author: "Avery Brooks", timestamp: "2026-05-23T14:00:00.000Z",
+    url: url("tickets", "REC-310"), author: "Avery Brooks", timestamp: "2026-05-23T14:00:00.000Z",
     entities: ["recommendations", "REC-310", "DP-882"], tags: ["recommendations", "launch", "blocked", "dependency"], confidence: 0.98
   },
   {
-    id: "github-recs-1", source: "github", title: "PR #1907: recommendations serving integration",
+    id: "code-recs-1", source: "code", title: "Change #1907: recommendations serving integration",
     body: "Review is technically complete, but approval is held because the fallback path logs raw user event IDs and the consent-aware dataset contract is unresolved.",
-    url: url("github", "1907"), author: "Priya Raman", timestamp: "2026-05-24T20:30:00.000Z",
+    url: url("code", "1907"), author: "Priya Raman", timestamp: "2026-05-24T20:30:00.000Z",
     entities: ["recommendations", "PR #1907", "DP-882"], tags: ["recommendations", "privacy", "review", "blocked"], confidence: 0.95
   },
   {
@@ -58,9 +58,9 @@ export const demoEvidence: EvidenceItem[] = [
     entities: ["recommendations", "consent status"], tags: ["recommendations", "design", "privacy", "launch"], confidence: 0.97
   },
   {
-    id: "jira-recs-2", source: "jira", title: "DP-882: consent-aware event export",
+    id: "tickets-recs-2", source: "tickets", title: "DP-882: consent-aware event export",
     body: "Data Platform rescheduled delivery from May 20 to June 12 after discovering deletion events were missing from the incremental pipeline.",
-    url: url("jira", "DP-882"), author: "Morgan Lee", timestamp: "2026-05-26T16:00:00.000Z",
+    url: url("tickets", "DP-882"), author: "Morgan Lee", timestamp: "2026-05-26T16:00:00.000Z",
     entities: ["Data Platform", "DP-882", "recommendations"], tags: ["dependency", "privacy", "delay", "data"], confidence: 1
   },
   {
@@ -88,9 +88,9 @@ export const demoEvidence: EvidenceItem[] = [
     entities: ["Redis", "sessions", "INC-119"], tags: ["sessions", "redis", "incident", "failover"], confidence: 0.99
   },
   {
-    id: "jira-redis-1", source: "jira", title: "SEC-442: session revocation controls",
+    id: "tickets-redis-1", source: "tickets", title: "SEC-442: session revocation controls",
     body: "Security review requires global logout within 60 seconds and revocation after privilege changes. The current Redis index meets this requirement; stateless cookies alone do not.",
-    url: url("jira", "SEC-442"), author: "Security", timestamp: "2025-11-05T20:00:00.000Z",
+    url: url("tickets", "SEC-442"), author: "Security", timestamp: "2025-11-05T20:00:00.000Z",
     entities: ["Redis", "sessions", "SEC-442"], tags: ["sessions", "security", "revocation", "redis"], confidence: 0.99
   },
   {
@@ -100,9 +100,9 @@ export const demoEvidence: EvidenceItem[] = [
     entities: ["Identity Platform", "Redis", "sessions"], tags: ["sessions", "owner", "redis", "migration"], confidence: 0.95
   },
   {
-    id: "github-redis-1", source: "github", title: "Issue #1660: evaluate encrypted session tokens",
+    id: "code-redis-1", source: "code", title: "Change #1660: evaluate encrypted session tokens",
     body: "Prototype reduced Redis reads but retained a revocation lookup, removing most of the operational benefit. The issue was closed pending a better revocation design.",
-    url: url("github", "1660"), author: "Sam Ortiz", timestamp: "2025-12-09T19:00:00.000Z",
+    url: url("code", "1660"), author: "Sam Ortiz", timestamp: "2025-12-09T19:00:00.000Z",
     entities: ["Redis", "sessions", "Issue #1660"], tags: ["sessions", "alternative", "revocation", "prototype"], confidence: 0.93
   },
   {
