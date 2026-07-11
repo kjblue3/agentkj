@@ -161,18 +161,22 @@ describe("workspace administrator setup", () => {
     expect(form.status).toBe(200);
     expect(form.text).toContain('pattern="\\d{17,20}"');
     expect(form.text).toContain("17-20 digit numeric application ID");
+    expect(form.text).toContain('<a href="https://agent.example.test/auth/services/acme-chat/callback"');
+    expect(form.text).toContain(">Copy</button>");
     const rejected = await request(app)
       .post(`/auth/service-setup/${secret}`)
       .type("form")
       .send({ clientId: "8a3ecd7f30084402b3601595f80fda95", clientSecret: "real-secret-value" });
     expect(rejected.status).toBe(400);
     expect(rejected.text).toContain("17-20 digit numeric application ID");
+    expect(rejected.text).toContain("Go back");
     expect(getWorkspaceClientCredentials("T4", patternSpec.id, env)).toBeUndefined();
     const accepted = await request(app)
       .post(`/auth/service-setup/${secret}`)
       .type("form")
       .send({ clientId: "112233445566778899", clientSecret: "real-secret-value" });
     expect(accepted.status).toBe(200);
+    expect(accepted.text).toContain("close itself");
     expect(getWorkspaceClientCredentials("T4", patternSpec.id, env)?.clientId).toBe("112233445566778899");
   });
 

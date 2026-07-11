@@ -9,6 +9,7 @@ import {
   type StoredServiceToken
 } from "../state/repositories.js";
 import { signOAuthState, verifyOAuthState } from "./oauthState.js";
+import { renderPage } from "./htmlPage.js";
 
 const refreshes = new Map<string, Promise<StoredServiceToken | undefined>>();
 
@@ -87,7 +88,7 @@ export function registerServiceOAuthRoutes(app: Express, env: NodeJS.ProcessEnv 
     const payload = state ? verifyOAuthState(state, env) : null;
     if (!service || !payload || payload.serviceId !== service.id || !baseUrl ||
         !isServiceConfigured(service, payload.workspaceId, env)) {
-      response.status(400).send("This authorization link is invalid, expired, or no longer configured.");
+      response.status(400).type("html").send(renderPage("Authorization link expired", "<p>This authorization link is invalid, expired, or no longer configured. Ask the bot for a fresh one in Slack.</p>"));
       return;
     }
     const creds = oauthClientCreds(service, payload.workspaceId, env)!;
@@ -109,7 +110,7 @@ export function registerServiceOAuthRoutes(app: Express, env: NodeJS.ProcessEnv 
     const intent = payload ? consumeOAuthIntent(payload.nonce, "authorize") : undefined;
     if (!service || !payload || !intent || intent.workspaceId !== payload.workspaceId ||
         intent.userId !== payload.userId || intent.serviceId !== service.id || !code || !baseUrl) {
-      response.status(400).send("This authorization callback is invalid or expired.");
+      response.status(400).type("html").send(renderPage("Authorization expired", "<p>This authorization callback is invalid or expired. Ask the bot for a fresh link in Slack.</p>"));
       return;
     }
     const parsed = await exchangeToken(service, payload.workspaceId, {
@@ -117,7 +118,7 @@ export function registerServiceOAuthRoutes(app: Express, env: NodeJS.ProcessEnv 
       redirect_uri: `${baseUrl}/auth/services/${service.id}/callback`
     }, env);
     if (!parsed) {
-      response.status(502).send("The authorization server did not return a usable access token.");
+      response.status(502).type("html").send(renderPage("Authorization failed", "<p>The authorization server did not return a usable access token. Try again from Slack.</p>"));
       return;
     }
     setStoredServiceToken(payload.workspaceId, payload.userId, service.id, {
@@ -126,7 +127,7 @@ export function registerServiceOAuthRoutes(app: Express, env: NodeJS.ProcessEnv 
       health: "ready",
       connectedAt: new Date().toISOString()
     }, env);
-    response.type("html").send(`<!doctype html><html><body style="font-family:system-ui;padding:2rem;text-align:center"><h1>Connected</h1><p>${escapeHtml(service.label)} is ready. You can close this tab and return to Slack.</p></body></html>`);
+    response.type("html").send(renderPage("Connected", `<p>${escapeHtml(service.label)} is ready. Return to Slack and ask away.</p>`, { autoCloseSeconds: 5 }));
   });
 }
 

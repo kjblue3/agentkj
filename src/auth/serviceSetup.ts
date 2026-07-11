@@ -9,6 +9,7 @@ import {
 } from "../state/repositories.js";
 import { isWorkspaceAdministrator } from "./workspaceAdmin.js";
 import { clientCredentialPreflight, type CredentialPreflight } from "./credentialPreflight.js";
+import { copyableValue, escapeHtml, linkifyHtml, renderPage } from "./htmlPage.js";
 
 export function createServiceSetupIntent(
   serviceId: string,
@@ -40,7 +41,16 @@ export function registerServiceSetupRoutes(
     const callbackUrl = `${env.PUBLIC_BASE_URL?.replace(/\/$/, "") ?? "<PUBLIC_BASE_URL>"}/auth/services/${service.id}/callback`;
     const instructions = service.dynamicSpec.setupInstructions.replace(/\{CALLBACK_URL\}/g, callbackUrl);
     const replacing = (intent.expectedVersion ?? 0) > 0;
-    response.type("html").send(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Configure ${escapeHtml(service.label)}</title><style>${styles}</style></head><body><main><h1>${replacing ? "Replace" : "Configure"} ${escapeHtml(service.label)}</h1><p><strong>Administrator task:</strong> register one provider application for this Slack workspace. Other members will only authorize their own accounts.</p><p>${escapeHtml(instructions)}</p><p><strong>Callback URL:</strong> <code>${escapeHtml(callbackUrl)}</code></p><p>This read-only integration may contact: ${service.dynamicSpec.apiHosts.map((host) => `<code>${escapeHtml(host)}</code>`).join(", ")}.</p>${replacing ? "<p><strong>Replacing these credentials will require every connected member to authorize again.</strong></p>" : ""}<form method="post"><label>Client ID<input name="clientId" required autocomplete="off"${service.dynamicSpec.oauth.clientIdPattern ? ` pattern="${escapeHtml(service.dynamicSpec.oauth.clientIdPattern)}"` : ""}${service.dynamicSpec.oauth.clientIdHint ? ` title="${escapeHtml(service.dynamicSpec.oauth.clientIdHint)}"` : ""}>${service.dynamicSpec.oauth.clientIdHint ? `<small>${escapeHtml(service.dynamicSpec.oauth.clientIdHint)}</small>` : ""}</label><label>Client secret<input name="clientSecret" type="password" required autocomplete="off"></label>${replacing ? '<label class="confirm"><input name="confirmReplace" type="checkbox" value="yes" required> I understand existing grants will require reauthorization.</label>' : ""}<button type="submit">${replacing ? "Replace" : "Save"} workspace configuration</button></form><p>These values go directly to the backend and are never posted to Slack or sent to the language model.</p></main></body></html>`);
+    const oauth = service.dynamicSpec.oauth;
+    const body =
+      `<p><strong>Administrator task:</strong> register one provider application for this Slack workspace. Other members will only authorize their own accounts.</p>` +
+      `<p>${linkifyHtml(instructions)}</p>` +
+      `<p><strong>Callback URL:</strong> ${copyableValue(callbackUrl)}</p>` +
+      `<p>This read-only integration may contact: ${service.dynamicSpec.apiHosts.map((host) => `<code>${escapeHtml(host)}</code>`).join(", ")}.</p>` +
+      (replacing ? "<p><strong>Replacing these credentials will require every connected member to authorize again.</strong></p>" : "") +
+      `<form method="post"><label>Client ID<input name="clientId" required autocomplete="off"${oauth.clientIdPattern ? ` pattern="${escapeHtml(oauth.clientIdPattern)}"` : ""}${oauth.clientIdHint ? ` title="${escapeHtml(oauth.clientIdHint)}"` : ""}>${oauth.clientIdHint ? `<small>${escapeHtml(oauth.clientIdHint)}</small>` : ""}</label><label>Client secret<input name="clientSecret" type="password" required autocomplete="off"></label>${replacing ? '<label class="confirm"><input name="confirmReplace" type="checkbox" value="yes" required> I understand existing grants will require reauthorization.</label>' : ""}<button type="submit">${replacing ? "Replace" : "Save"} workspace configuration</button></form>` +
+      `<p>These values go directly to the backend and are never posted to Slack or sent to the language model.</p>`;
+    response.type("html").send(renderPage(`${replacing ? "Replace" : "Configure"} ${service.label}`, body));
   });
 
   app.post("/auth/service-setup/:secret", express.urlencoded({ extended: false, limit: "32kb" }), async (request, response) => {
@@ -56,22 +66,22 @@ export function registerServiceSetupRoutes(
     const clientId = typeof request.body?.clientId === "string" ? request.body.clientId.trim() : "";
     const clientSecret = typeof request.body?.clientSecret === "string" ? request.body.clientSecret.trim() : "";
     if (!service || !clientId || !clientSecret) {
-      response.status(400).type("html").send(page("Setup failed", "Required values were missing. Go back and complete both fields."));
+      response.status(400).type("html").send(page("Setup failed", "Required values were missing. Go back and complete both fields.", { backButton: true }));
       return;
     }
     if ((preview.expectedVersion ?? 0) > 0 && request.body?.confirmReplace !== "yes") {
-      response.status(400).type("html").send(page("Confirmation required", "Credential replacement was not confirmed. Go back and confirm to continue."));
+      response.status(400).type("html").send(page("Confirmation required", "Credential replacement was not confirmed. Go back and confirm to continue.", { backButton: true }));
       return;
     }
     const problem = clientCredentialProblem(service, clientId, clientSecret);
     if (problem) {
-      response.status(400).type("html").send(page("Check the credentials", `${escapeHtml(problem)} This setup link is still valid — go back and correct the values.`));
+      response.status(400).type("html").send(page("Check the credentials", `${escapeHtml(problem)} This setup link is still valid.`, { backButton: true }));
       return;
     }
     const callbackUrl = `${env.PUBLIC_BASE_URL?.replace(/\/$/, "") ?? ""}/auth/services/${service.id}/callback`;
     const rejection = await preflight(service.dynamicSpec, clientId, clientSecret, callbackUrl, service.label).catch(() => null);
     if (rejection) {
-      response.status(400).type("html").send(page("The provider rejected these credentials", `${escapeHtml(rejection)} This setup link is still valid — go back and correct the values.`));
+      response.status(400).type("html").send(page("The provider rejected these credentials", `${escapeHtml(rejection)} This setup link is still valid.`, { backButton: true }));
       return;
     }
     const intent = consumeOAuthIntent(secret, "setup");
@@ -89,7 +99,7 @@ export function registerServiceSetupRoutes(
         expectedVersion: intent.expectedVersion,
         env
       });
-      response.type("html").send(page(`${escapeHtml(service.label)} is ready`, "Workspace configuration saved. Members can now authorize their own accounts from Slack."));
+      response.type("html").send(page(`${service.label} is ready`, "Workspace configuration saved. Members can now authorize their own accounts from Slack.", { autoCloseSeconds: 5 }));
     } catch (error) {
       response.status(409).type("html").send(page("Setup changed", escapeHtml(error instanceof Error ? error.message : "Request a fresh setup link.")));
     }
@@ -128,6 +138,6 @@ function clientCredentialProblem(
   return null;
 }
 
-const styles = "body{font:16px system-ui;background:#f7f7f8;margin:0}main{max-width:620px;margin:8vh auto;background:#fff;padding:32px;border-radius:14px;box-shadow:0 8px 32px #0001}label{display:block;margin:18px 0;font-weight:600}input{box-sizing:border-box;width:100%;padding:11px;margin-top:6px}.confirm input{width:auto}small{display:block;font-weight:400;color:#555;margin-top:4px}button{padding:12px 18px;background:#4a154b;color:#fff;border:0;border-radius:8px}code{word-break:break-all;background:#eee;padding:2px 5px}";
-function page(title: string, message: string): string { return `<!doctype html><html><head><meta charset="utf-8"><style>${styles}</style></head><body><main><h1>${title}</h1><p>${message}</p></main></body></html>`; }
-function escapeHtml(value: string): string { return value.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!); }
+function page(title: string, message: string, options?: { autoCloseSeconds?: number; backButton?: boolean }): string {
+  return renderPage(title, `<p>${message}</p>`, options);
+}

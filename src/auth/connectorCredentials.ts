@@ -1,5 +1,6 @@
 import type express from "express";
 import { completeCredentialIntent, credentialIntentExists } from "../mcp/connections.js";
+import { escapeHtml, renderPage } from "./htmlPage.js";
 
 export function registerConnectorCredentialRoutes(app: express.Express): void {
   app.get("/auth/connectors/:secret", (request, response) => {
@@ -7,7 +8,7 @@ export function registerConnectorCredentialRoutes(app: express.Express): void {
       response.status(404).type("html").send(page("Invalid link", "This credential link is invalid or expired."));
       return;
     }
-    response.type("html").send(`<!doctype html><html><head><meta charset="utf-8"><style>${styles}</style></head><body><main><h1>Connect service</h1><p>Enter the bearer credential issued by the service. It is sent only to this backend.</p><form method="post"><label>Bearer token<input name="token" type="password" required autocomplete="off"></label><label>Granted scopes<input name="scopes" autocomplete="off"></label><button type="submit">Enable connection</button></form></main></body></html>`);
+    response.type("html").send(renderPage("Connect service", `<p>Enter the bearer credential issued by the service. It is sent only to this backend.</p><form method="post"><label>Bearer token<input name="token" type="password" required autocomplete="off"></label><label>Granted scopes<input name="scopes" autocomplete="off"></label><button type="submit">Enable connection</button></form>`));
   });
   app.post("/auth/connectors/:secret", bodyParser(), (request, response) => {
     const token = typeof request.body?.token === "string" ? request.body.token : "";
@@ -16,9 +17,9 @@ export function registerConnectorCredentialRoutes(app: express.Express): void {
       : [];
     try {
       completeCredentialIntent(String(request.params.secret ?? ""), token, scopes);
-      response.type("html").send(page("Connected", "The connection is ready. You can close this tab and return to Slack."));
+      response.type("html").send(page("Connected", "The connection is ready. Return to Slack and ask away.", { autoCloseSeconds: 5 }));
     } catch (error) {
-      response.status(400).type("html").send(page("Could not connect", escapeHtml(error instanceof Error ? error.message : "The credential was rejected.")));
+      response.status(400).type("html").send(page("Could not connect", escapeHtml(error instanceof Error ? error.message : "The credential was rejected."), { backButton: true }));
     }
   });
 }
@@ -35,6 +36,6 @@ function bodyParser() {
   };
 }
 
-function page(title: string, message: string): string { return `<!doctype html><html><head><meta charset="utf-8"><style>${styles}</style></head><body><main><h1>${escapeHtml(title)}</h1><p>${message}</p></main></body></html>`; }
-function escapeHtml(value: string): string { return value.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!); }
-const styles = "body{font:16px system-ui;background:#f7f7f8;margin:0}main{max-width:560px;margin:10vh auto;background:#fff;padding:32px;border-radius:14px}label{display:block;margin:20px 0}input{box-sizing:border-box;width:100%;padding:12px;margin-top:7px}button{padding:12px 18px;background:#4a154b;color:#fff;border:0;border-radius:8px}";
+function page(title: string, message: string, options?: { autoCloseSeconds?: number; backButton?: boolean }): string {
+  return renderPage(title, `<p>${message}</p>`, options);
+}

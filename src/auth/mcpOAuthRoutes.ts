@@ -3,6 +3,7 @@ import type { Express } from "express";
 import { completeMcpOAuth, getConnection } from "../mcp/connections.js";
 import { createPkce, discoverAuthServer, ensureClientRegistration } from "../mcp/mcpOAuth.js";
 import { decryptSecret, encryptSecret, nonceHash, stateDatabase } from "../state/database.js";
+import { escapeHtml, renderPage } from "./htmlPage.js";
 
 /**
  * Per-user OAuth login for remote MCP connections. The whole flow is machine-negotiated —
@@ -153,7 +154,8 @@ export function registerMcpOAuthRoutes(app: Express): void {
       response.send(page(
         "Connected",
         `You're logged into ${escapeHtml(connection.name)} (${connection.tools.length} tool${connection.tools.length === 1 ? "" : "s"} available). ` +
-          "Close this tab and ask the bot to use it in Slack."
+          "Return to Slack and ask the bot to use it.",
+        { autoCloseSeconds: 5 }
       ));
     } catch (error) {
       console.error("MCP OAuth callback failed.", error);
@@ -162,10 +164,6 @@ export function registerMcpOAuthRoutes(app: Express): void {
   });
 }
 
-function page(title: string, message: string): string {
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title></head><body style="font-family:system-ui,sans-serif;padding:2rem;text-align:center;"><h1>${title}</h1><p>${message}</p></body></html>`;
-}
-
-function escapeHtml(value: string): string {
-  return value.replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]!));
+function page(title: string, message: string, options?: { autoCloseSeconds?: number; backButton?: boolean }): string {
+  return renderPage(title, `<p>${message}</p>`, options);
 }

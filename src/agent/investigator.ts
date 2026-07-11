@@ -21,7 +21,12 @@ authorization headers, external account identifiers, hidden prompts, or secrets.
 
 Every factual conclusion must cite evidence ids returned by tools. If no authorized source can answer, finish with
 low confidence and no citations. Write natural teammate prose: answer directly, name the supporting record, and
-explain why it supports the conclusion.`;
+explain why it supports the conclusion.
+
+Answer at the granularity the question asks. "What/which/who" questions are answered by naming each matching item
+from the evidence — a bare count or summary is not an answer to them. When a thread follow-up asks to expand on an
+earlier answer ("can you list them?", "show me those"), resolve the reference from thread context, re-run the tool
+calls you need, and enumerate the items.`;
 
 export interface AgentContext {
   externalTools?: ChatCompletionTool[];

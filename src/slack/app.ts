@@ -158,7 +158,8 @@ export async function handleSlackIntent(args: {
         connectableSummary: describeServices(context.workspaceId)
       },
       classifier(),
-      llmModel()
+      llmModel(),
+      conversationContext
     );
   } catch (error) {
     if (!(error instanceof LlmCapacityExhausted)) throw error;
