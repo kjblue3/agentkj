@@ -1,5 +1,18 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { synthesizeService } from "../src/services/architect.js";
+
+// verifySpecEndpoints probes drafted OAuth endpoints through safeFetch; fake the network here.
+vi.mock("../src/security/publicUrl.js", () => ({
+  safeFetch: vi.fn(async (url: string | URL) => {
+    const href = String(url);
+    if (href.includes("ghost.example")) throw new Error("getaddrinfo ENOTFOUND ghost.example");
+    if (href.includes("missing.example")) return new Response("not found", { status: 404 });
+    // Real authorize/token endpoints answer without params — typically a 400 complaint.
+    return new Response("missing client_id", { status: 400 });
+  }),
+  validatePublicUrl: vi.fn(async (url: string) => new URL(url))
+}));
+
+import { synthesizeService, verifySpecEndpoints } from "../src/services/architect.js";
 import { dynamicServiceSpecSchema } from "../src/services/dynamicSpec.js";
 import { DynamicToolProvider } from "../src/services/dynamicTools.js";
 
@@ -110,5 +123,27 @@ describe("synthesizeService", () => {
     const { client } = stubClient([JSON.stringify({ error: "That service has no public OAuth2 API." })]);
     const result = await synthesizeService("flurbo", client, "test-model");
     expect("error" in result && result.error).toContain("no public OAuth2 API");
+  });
+});
+
+describe("verifySpecEndpoints", () => {
+  it("accepts specs whose OAuth endpoints answer (even with a 4xx param complaint)", async () => {
+    const spec = dynamicServiceSpecSchema.parse(validSpec);
+    expect(await verifySpecEndpoints(spec)).toBeNull();
+  });
+
+  it("rejects hallucinated hosts that fail DNS or 404", async () => {
+    const ghost = structuredClone(validSpec);
+    ghost.apiHosts = ["ghost.example"];
+    ghost.oauth.authorizeUrl = "https://ghost.example/oauth/authorize";
+    ghost.oauth.tokenUrl = "https://ghost.example/oauth/token";
+    ghost.homepage = "https://ghost.example";
+    ghost.tools[0]!.urlTemplate = "https://ghost.example/v1/workouts";
+    expect(await verifySpecEndpoints(dynamicServiceSpecSchema.parse(ghost))).toContain("unreachable");
+
+    const missing = structuredClone(ghost);
+    for (const key of ["authorizeUrl", "tokenUrl"] as const) missing.oauth[key] = missing.oauth[key].replace("ghost", "missing");
+    missing.apiHosts = ["missing.example", "ghost.example"];
+    expect(await verifySpecEndpoints(dynamicServiceSpecSchema.parse(missing))).toContain("doesn't exist");
   });
 });
