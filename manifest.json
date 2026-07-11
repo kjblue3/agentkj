@@ -1,101 +1,93 @@
 {
-    "display_information": {
-        "name": "Slack Detective",
-        "description": "Evidence-backed workplace investigations inside Slack."
+  "display_information": {
+    "name": "Slack Detective",
+    "description": "Evidence-backed workplace investigations inside Slack."
+  },
+  "features": {
+    "app_home": {
+      "home_tab_enabled": true,
+      "messages_tab_enabled": true,
+      "messages_tab_read_only_enabled": false
     },
-    "features": {
-        "app_home": {
-            "home_tab_enabled": true,
-            "messages_tab_enabled": true,
-            "messages_tab_read_only_enabled": false
+    "bot_user": {
+      "display_name": "Slack Detective",
+      "always_online": true
+    },
+    "assistant_view": {
+      "assistant_description": "Ask Slack Detective why something happened at work. It searches accessible evidence, reconstructs a timeline, and returns a cited report.",
+      "suggested_prompts": [
+        {
+          "title": "Investigate checkout latency",
+          "message": "Why did checkout latency spike?"
         },
-        "bot_user": {
-            "display_name": "Slack Detective",
-            "always_online": true
-        },
-        "slash_commands": [
-            {
-                "command": "/detective",
-                "description": "Investigate workplace questions",
-                "usage_hint": "Why did checkout latency spike?",
-                "should_escape": false
-            }
-        ],
-        "assistant_view": {
-            "assistant_description": "Ask Slack Detective why something happened at work. It searches accessible evidence, reconstructs a timeline, and returns a cited report.",
-            "suggested_prompts": [
-                {
-                    "title": "Investigate checkout latency",
-                    "message": "Why did checkout latency spike?"
-                },
-                {
-                    "title": "Investigate launch delay",
-                    "message": "Why was the recommendations launch delayed?"
-                }
-            ]
+        {
+          "title": "Investigate launch delay",
+          "message": "Why was the recommendations launch delayed?"
         }
-    },
-    "oauth_config": {
-        "redirect_urls": [
-            "https://ngrok-free.app/slack/oauth_redirect"
-        ],
-        "scopes": {
-            "user": [
-                "search:read",
-                "channels:history",
-                "channels:read",
-                "groups:history",
-                "groups:read",
-                "im:history",
-                "mpim:history",
-                "users:read",
-                "search:read.public",
-                "search:read.private",
-                "search:read.mpim",
-                "search:read.im",
-                "search:read.files",
-                "search:read.users",
-                "chat:write",
-                "canvases:read",
-                "canvases:write",
-                "users:read.email"
-            ],
-            "bot": [
-                "commands",
-                "app_mentions:read",
-                "channels:history",
-                "chat:write",
-                "groups:history",
-                "im:history",
-                "im:read",
-                "im:write",
-                "reactions:write",
-                "reactions:read",
-                "users:read",
-                "assistant:write"
-            ]
-        },
-        "pkce_enabled": false
-    },
-    "settings": {
-        "event_subscriptions": {
-            "request_url": "https://ngrok-free.app/slack/events",
-            "bot_events": [
-                "app_home_opened",
-                "app_mention",
-                "assistant_thread_started",
-                "message.channels",
-                "message.groups",
-                "message.im"
-            ]
-        },
-        "interactivity": {
-            "is_enabled": true,
-            "request_url": "https://ngrok-free.app/slack/events"
-        },
-        "org_deploy_enabled": true,
-        "socket_mode_enabled": true,
-        "token_rotation_enabled": false,
-        "is_mcp_enabled": true
+      ]
     }
+  },
+  "oauth_config": {
+    "redirect_urls": [
+      "https://ngrok-free.app/slack/oauth_redirect"
+    ],
+    "scopes": {
+      "user": [
+        "search:read",
+        "channels:history",
+        "channels:read",
+        "groups:history",
+        "groups:read",
+        "im:history",
+        "mpim:history",
+        "users:read",
+        "search:read.public",
+        "search:read.private",
+        "search:read.mpim",
+        "search:read.im",
+        "search:read.files",
+        "search:read.users",
+        "chat:write",
+        "canvases:read",
+        "canvases:write",
+        "users:read.email"
+      ],
+      "bot": [
+        "commands",
+        "app_mentions:read",
+        "channels:history",
+        "chat:write",
+        "groups:history",
+        "im:history",
+        "im:read",
+        "im:write",
+        "reactions:write",
+        "reactions:read",
+        "users:read",
+        "assistant:write"
+      ]
+    },
+    "pkce_enabled": false
+  },
+  "settings": {
+    "event_subscriptions": {
+      "request_url": "https://ngrok-free.app/slack/events",
+      "bot_events": [
+        "app_home_opened",
+        "app_mention",
+        "assistant_thread_started",
+        "message.channels",
+        "message.groups",
+        "message.im"
+      ]
+    },
+    "interactivity": {
+      "is_enabled": true,
+      "request_url": "https://ngrok-free.app/slack/events"
+    },
+    "org_deploy_enabled": true,
+    "socket_mode_enabled": true,
+    "token_rotation_enabled": false,
+    "is_mcp_enabled": true
+  }
 }

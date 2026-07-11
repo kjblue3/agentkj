@@ -21,7 +21,7 @@ export type SlackIntent =
        */
       relevantSources?: string[];
     }
-  | { kind: "connect"; target: string }
+  | { kind: "connect"; targets: string[] }
   | { kind: "list_connectors" }
   | { kind: "approve" }
   | { kind: "share" }
@@ -35,11 +35,11 @@ export interface IntentContext {
 }
 
 const CLASSIFIER_SYSTEM_PROMPT = `You route one Slack message sent to an investigation agent. Reply with JSON only:
-{"kind": "investigate" | "connect" | "list_connectors" | "approve" | "share" | "help", "target"?: string, "relevantSources"?: string[]}
+{"kind": "investigate" | "connect" | "list_connectors" | "approve" | "share" | "help", "targets"?: string[], "relevantSources"?: string[]}
 
 Rules, in priority order:
 1. "approve <id> ..." and "share <id> ..." are literal bot-issued commands — return those kinds only for messages that start with those words followed by an id.
-2. "connect": the user wants to link/hook up/add a service, account, data source, or MCP server — in ANY phrasing ("can you connect <name>", "add my <name> account", "hook this up: https://..."). Also choose connect when the message is essentially just a link to the user's own account/profile/dashboard on a service that requires login (a fitness profile, a SaaS workspace) — pasting it means they want that service's data. Set "target" to the service name or the URL, exactly as the user referenced it.
+2. "connect": the user wants to link/hook up/add one or MORE services, accounts, data sources, or MCP servers — in ANY phrasing ("can you connect <name>", "add my <name> and <other> accounts", "hook this up: https://..."). Also choose connect when the message is essentially just a link to the user's own account/profile/dashboard on a service that requires login (a fitness profile, a SaaS workspace) — pasting it means they want that service's data. Set "targets" to the list of service names or URLs, one entry per service, exactly as the user referenced each.
 3. "list_connectors": asking what is connected or available to connect.
 4. "help": empty greetings, "what can you do".
 5. Everything else is "investigate": a question or task to research. Set "relevantSources" to the subset of the user's CONNECTED sources that could plausibly contain the answer, judged by each source's data domain — include a source only if the question's subject matter matches it; return [] when none fit. A plain public article link to read counts as investigate, not connect.
@@ -68,11 +68,14 @@ export function heuristicIntent(text: string): SlackIntent {
   if (/^approve$/i.test(head ?? "") && rest.length > 0) return { kind: "approve" };
   if (/^share$/i.test(head ?? "") && rest.length > 0) return { kind: "share" };
   if (/^connect/i.test(head ?? "")) {
-    // "connect github", "connect-github", "connect to my <service>" — target is everything after
-    // the verb (or the verb's own suffix for the hyphenated form).
+    // "connect github", "connect-github", "connect a and b" — targets are everything after the
+    // verb (or the verb's own suffix for the hyphenated form), split on list separators.
     const inline = head!.replace(/^connect[-:]?/i, "");
-    const target = [inline, ...rest].filter(Boolean).join(" ").trim();
-    return target ? { kind: "connect", target } : { kind: "help" };
+    const targets = [inline, ...rest].filter(Boolean).join(" ").trim()
+      .split(/\s*(?:,|&|\band\b)\s*/i)
+      .map((part) => part.trim())
+      .filter(Boolean);
+    return targets.length > 0 ? { kind: "connect", targets } : { kind: "help" };
   }
   return { kind: "investigate" };
 }
@@ -109,9 +112,17 @@ export async function classifyIntent(
     if (!kind) return heuristicIntent(trimmed);
 
     if (kind === "connect") {
-      const target = typeof parsed!.target === "string" ? parsed!.target.trim() : "";
+      const rawTargets = Array.isArray(parsed!.targets)
+        ? parsed!.targets
+        : typeof (parsed as Record<string, unknown>).target === "string"
+          ? [(parsed as Record<string, unknown>).target]
+          : [];
+      const targets = rawTargets
+        .filter((value): value is string => typeof value === "string" && Boolean(value.trim()))
+        .map((value) => value.trim())
+        .slice(0, 5);
       // A connect with no discernible target is unactionable — treat as help so the user gets usage.
-      return target ? { kind: "connect", target } : { kind: "help" };
+      return targets.length > 0 ? { kind: "connect", targets } : { kind: "help" };
     }
     if (kind === "investigate") {
       const relevantSources = Array.isArray(parsed!.relevantSources)

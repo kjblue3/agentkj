@@ -38,11 +38,21 @@ async function exchangeToken(
     headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
     body
   });
+  const text = await response.text();
   if (!response.ok) {
-    console.warn(`${service.label} token endpoint returned HTTP ${response.status}.`);
+    // Provider error bodies ({error, error_description}) are the only way to debug a failed
+    // exchange; they never contain secrets, so log them.
+    console.warn(`${service.label} token endpoint returned HTTP ${response.status}: ${text.slice(0, 300)}`);
     return null;
   }
-  return oauth.parseTokenResponse((await response.json()) as Record<string, unknown>);
+  try {
+    const parsed = oauth.parseTokenResponse(JSON.parse(text) as Record<string, unknown>);
+    if (!parsed) console.warn(`${service.label} token response had no access token: ${text.slice(0, 300)}`);
+    return parsed;
+  } catch {
+    console.warn(`${service.label} token endpoint returned non-JSON: ${text.slice(0, 200)}`);
+    return null;
+  }
 }
 
 /**
@@ -132,7 +142,13 @@ export function registerServiceOAuthRoutes(app: Express, env: NodeJS.ProcessEnv 
     }
 
     try {
-      const parsed = await exchangeToken(service, { grant_type: "authorization_code", code }, env);
+      // redirect_uri is REQUIRED in the code exchange when it was sent on the authorize redirect
+      // (RFC 6749 §4.1.3). Some providers tolerate omitting it; strict ones reject the exchange.
+      const parsed = await exchangeToken(
+        service,
+        { grant_type: "authorization_code", code, redirect_uri: `${baseUrl}/auth/services/${service.id}/callback` },
+        env
+      );
       if (!parsed) {
         response.status(502).send(`${service.label} did not return an access token. Please try connecting again.`);
         return;

@@ -27,6 +27,7 @@ const ARCHITECT_PROMPT = `You design a read-only API integration for a well-know
     "accountLabelPath": "dot.path to a human account name in the token response, if present"
   },
   "setupInstructions": "Where the operator creates the OAuth app (exact settings-page URL), which fields to copy, and that the redirect/callback URL to register is {CALLBACK_URL}. 2-4 sentences.",
+  "accessNotes": "ONLY if parts of this API require a paid plan, subscription, or approval process: one sentence saying what's gated. Omit when the free tier covers these tools.",
   "tools": [
     {
       "name": "snake_case_tool",
@@ -39,7 +40,9 @@ const ARCHITECT_PROMPT = `You design a read-only API integration for a well-know
 }
 
 Hard rules:
+- Users typo service names. Read the request as the most likely intended well-known product — a popular product one edit away beats an obscure or tangential product that shares letters — and use the intended product's proper name throughout.
 - Real endpoints only, from your knowledge of the service's public API documentation. If you are not confident the service exists with a public OAuth2 + REST API, or it uses a non-OAuth2 scheme, reply {"error": "<one sentence why, and what would work instead>"} .
+- Paywalls: if there is NO free way to access this API at all (paid developer program, subscription-only API), reply {"error": "<say plainly that the API is paywalled and what it costs/requires>"} instead of a spec. If only SOME relevant data is behind a paid plan, still build the free-tier tools and state what's gated in "accessNotes".
 - READ-ONLY: request no write scopes; tools are GET only.
 - 2 to 5 tools, chosen for answering a user's questions about THEIR OWN data in the service.
 - Ensure refresh tokens where the provider supports it (e.g. offline access params).

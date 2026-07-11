@@ -32,6 +32,8 @@ export interface InvestigateOptions {
   publicUrl?: string;
   /** Source ids the intent router judged relevant to this question (see AgentContext.relevantSources). */
   relevantSources?: string[];
+  /** Prior thread turns for follow-up questions (see AgentContext.conversationContext). */
+  conversationContext?: string;
   /** Not-yet-connected service ids the agent may propose in `suggestedConnection`. */
   connectableServices?: string[];
   /**
@@ -112,7 +114,8 @@ export class InvestigationPipeline {
       externalTools: externalTools.length > 0 ? externalTools : undefined,
       externalCall,
       relevantSources: opts.relevantSources,
-      connectableServices: opts.connectableServices
+      connectableServices: opts.connectableServices,
+      conversationContext: opts.conversationContext
     };
 
     if (!ctx.github && !ctx.slack && !ctx.externalTools) return null;

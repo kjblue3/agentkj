@@ -60,6 +60,8 @@ export const dynamicServiceSpecSchema = z
     }),
     /** Shown on the setup form: where to create the provider's OAuth app. May reference {CALLBACK_URL}. */
     setupInstructions: z.string().min(20).max(1500),
+    /** Paywall/plan caveats: set when parts of this API require a paid plan or approval process. */
+    accessNotes: z.string().min(5).max(300).optional(),
     tools: z.array(dynamicToolSchema).min(1).max(6)
   })
   .superRefine((spec, ctx) => {

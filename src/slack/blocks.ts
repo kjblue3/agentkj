@@ -127,175 +127,55 @@ export function selectDisplayTimeline(report: InvestigationResult): Investigatio
 }
 
 /**
- * A no-evidence result renders as a short honest reply, not a report skeleton with "_No evidence
- * found._" placeholders — the empty board WAS the product failure (junk hits used to pad it).
- * When the agent named a connectable service that could answer, the reply becomes the connect
- * prompt, turning a miss into the setup step for answering next time.
+ * Reports render like a teammate's Slack message, not a form: the answer as prose, a light
+ * "Sources" line with inline links, an optional connect hint on a miss, and — when the agent
+ * has a next step in mind — ONE suggested follow-up with Do it / Skip buttons ("Do it" makes
+ * the agent execute the follow-up itself). No headers, boards, or dividers.
  */
-function buildNoEvidenceBlocks(report: InvestigationResult): SlackBlock[] {
-  return [
-    {
-      type: "section",
-      text: { type: "mrkdwn", text: truncate(report.shortAnswer, 2200) }
-    },
-    ...(report.suggestedConnection
-      ? [{
-          type: "section",
-          text: {
-            type: "mrkdwn",
-            text:
-              `💡 This looks like a *${report.suggestedConnection}* question, and you haven't connected it. ` +
-              `Say \`connect ${report.suggestedConnection}\` and I'll set it up — then ask me again.`
-          }
-        }]
-      : []),
-    {
-      type: "context",
-      elements: [{ type: "mrkdwn", text: `*Case:* ${truncate(report.question, 160)} · no relevant evidence in your connected sources` }]
-    }
-  ] as SlackBlock[];
-}
-
 export function buildReportBlocks(report: InvestigationResult, reportId: string): SlackBlock[] {
-  if (report.evidence.length === 0) return buildNoEvidenceBlocks(report);
-  const displayEvidence = selectDisplayEvidence(report);
-  const displayTimeline = selectDisplayTimeline(report);
-  const timeline = displayTimeline.slice(0, timelinePreviewLimit).map(
-    (event) => `• *${dateLabel(event.timestamp)} · ${event.title}*\n${truncate(event.summary, 240)}`
-  ).join("\n");
-  const evidence = displayEvidence.slice(0, evidencePreviewLimit).map(
-    (item, index) => `${index + 1}. ${iconFor(item.source)} <${item.url}|${item.title}>`
-  ).join("\n");
-  const nextMoves = report.recommendedActions.slice(0, 3).map((action) => `• ${action}`).join("\n");
+  const blocks: SlackBlock[] = [
+    { type: "section", text: { type: "mrkdwn", text: truncate(report.shortAnswer, 2900) } }
+  ];
 
-  return [
-    {
-      type: "header",
-      text: { type: "plain_text", text: "🕵️ Detective Report", emoji: true }
-    },
-    {
-      type: "context",
-      elements: [
-        { type: "mrkdwn", text: `*Case:* ${report.question}` },
-        { type: "mrkdwn", text: `*Confidence:* ${confidenceBadge(report.confidence)}` },
-        { type: "mrkdwn", text: `*Sources:* ${sourceModeLabel(report)}` }
-      ]
-    },
-    { type: "divider" },
-    {
-      type: "section",
-      text: { type: "mrkdwn", text: `*Short answer*\n${truncate(report.shortAnswer, 2200)}` }
-    },
-    {
-      type: "section",
-      text: { type: "mrkdwn", text: `*Likely root cause*\n${truncate(report.likelyRootCause, 1200)}` }
-    },
-    { type: "divider" },
-    {
-      type: "section",
-      text: { type: "mrkdwn", text: `*Causal timeline*\n${timeline || "_No timeline found._"}` }
-    },
-    {
-      type: "section",
-      text: { type: "mrkdwn", text: `*Evidence board*\n${evidence || "_No evidence found._"}` }
-    },
-    { type: "divider" },
-    {
+  if (report.suggestedConnection) {
+    blocks.push({
       type: "section",
       text: {
         type: "mrkdwn",
-        text: `*Next moves*\n${nextMoves || "_No recommended actions._"}`
+        text:
+          `💡 This looks like a *${report.suggestedConnection}* question, and you haven't connected it. ` +
+          `Say \`connect ${report.suggestedConnection}\` and I'll set it up — then ask me again.`
       }
-    },
-    {
-      type: "actions",
-      elements: [
-        button("Show Evidence", "show_evidence", reportId, "primary"),
-        button("Show Timeline", "show_timeline", reportId),
-        button("Create Follow-up", "create_followup", reportId),
-        button("Mark Solved", "mark_solved", reportId)
-      ]
-    }
-  ] as SlackBlock[];
-}
+    } as SlackBlock);
+  }
 
-export function buildEvidenceBlocks(report: InvestigationResult): SlackBlock[] {
-  const displayEvidence = selectDisplayEvidence(report).slice(0, evidenceBoardLimit);
-  return [
-    { type: "header", text: { type: "plain_text", text: "📌 Evidence Board", emoji: true } },
-    {
+  const sources = selectDisplayEvidence(report).slice(0, evidencePreviewLimit);
+  if (sources.length > 0) {
+    blocks.push({
       type: "context",
-      elements: [
-        { type: "mrkdwn", text: `Ranked evidence for *${truncate(report.question, 160)}*` }
-      ]
-    },
-    { type: "divider" },
-    ...displayEvidence.flatMap((item, index) => [{
-      type: "section",
-      text: {
+      elements: [{
         type: "mrkdwn",
-        text: `*${index + 1}. ${iconFor(item.source)} <${item.url}|${item.title}>*\n${truncate(item.body, 700)}`
-      }
-    }, {
-      type: "context",
-      elements: [
-        {
-          type: "mrkdwn",
-          text: `${item.author ?? "Unknown"} · ${dateLabel(item.timestamp)} · ID: \`${item.id}\``
-        }
-      ]
-    }])
-  ] as SlackBlock[];
-}
+        text: `Sources: ${sources.map((item) => `${iconFor(item.source)} <${item.url}|${truncate(item.title, 70)}>`).join("  ·  ")}`
+      }]
+    } as SlackBlock);
+  }
 
-export function buildTimelineBlocks(report: InvestigationResult): SlackBlock[] {
-  const displayTimeline = selectDisplayTimeline(report).slice(0, timelineBoardLimit);
-  return [
-    { type: "header", text: { type: "plain_text", text: "🧵 Reconstructed Timeline", emoji: true } },
-    {
-      type: "context",
-      elements: [
-        { type: "mrkdwn", text: `Timeline events tied to evidence for *${truncate(report.question, 160)}*` }
-      ]
-    },
-    { type: "divider" },
-    ...displayTimeline.flatMap((event, index) => [{
-      type: "section",
-      text: {
-        type: "mrkdwn",
-        text: `*${index + 1}. ${dateLabel(event.timestamp)} · ${event.title}*\n${truncate(event.summary, 800)}`
-      }
-    }, {
-      type: "context",
-      elements: [
-        { type: "mrkdwn", text: `Evidence: ${event.evidenceIds.map((id) => `\`${id}\``).join(", ")}` }
-      ]
-    }])
-  ] as SlackBlock[];
-}
+  const followup = report.recommendedActions.find((action) => action.trim());
+  if (followup) {
+    blocks.push(
+      {
+        type: "section",
+        text: { type: "mrkdwn", text: `Want me to follow up? _${truncate(followup, 280)}_` }
+      } as SlackBlock,
+      {
+        type: "actions",
+        elements: [
+          { type: "button", text: { type: "plain_text", text: "Do it", emoji: true }, style: "primary", action_id: "followup_do", value: reportId },
+          { type: "button", text: { type: "plain_text", text: "Skip", emoji: true }, action_id: "followup_skip", value: reportId }
+        ]
+      } as SlackBlock
+    );
+  }
 
-function confidenceBadge(confidence: InvestigationResult["confidence"]): string {
-  return confidence === "high" ? "🟢 High" : confidence === "medium" ? "🟡 Medium" : "🔴 Low";
-}
-
-function sourceModeLabel(report: InvestigationResult): string {
-  const mode = report.sourceMode ?? "demo";
-  const connectorCount = report.connectors?.length
-    ?? (report.evidence.length > 0 ? new Set(report.evidence.map((item) => item.source)).size : 0);
-  return `${mode}${connectorCount ? ` · ${connectorCount} source${connectorCount === 1 ? "" : "s"}` : ""}`;
-}
-
-function button(
-  text: string,
-  actionId: string,
-  value: string,
-  style?: "primary" | "danger"
-): Record<string, unknown> {
-  return {
-    type: "button",
-    text: { type: "plain_text", text, emoji: true },
-    action_id: actionId,
-    value,
-    ...(style ? { style } : {})
-  };
+  return blocks;
 }

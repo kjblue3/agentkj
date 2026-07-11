@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { InvestigationPipeline } from "../investigation/pipeline.js";
 import { demoQuestions } from "../data/demoData.js";
 import { registerGitHubOAuthRoutes } from "../auth/githubOAuth.js";
+import { registerMcpOAuthRoutes } from "../auth/mcpOAuthRoutes.js";
 import { registerServiceOAuthRoutes } from "../auth/serviceOAuth.js";
 import { registerServiceSetupRoutes } from "../auth/serviceSetup.js";
 import { registerConnectorCredentialRoutes } from "../auth/connectorCredentials.js";
@@ -15,6 +16,7 @@ export function createApi(pipeline: InvestigationPipeline) {
   registerGitHubOAuthRoutes(app);
   registerServiceOAuthRoutes(app);
   registerServiceSetupRoutes(app);
+  registerMcpOAuthRoutes(app);
   registerConnectorCredentialRoutes(app);
 
   app.get("/health", (_request, response) => {
