@@ -1,4 +1,5 @@
 import type OpenAI from "openai";
+import { safeFetch } from "../security/publicUrl.js";
 import { dynamicServiceSpecSchema, type DynamicServiceSpec } from "./dynamicSpec.js";
 
 /**
@@ -42,6 +43,7 @@ const ARCHITECT_PROMPT = `You design a read-only API integration for a well-know
 Hard rules:
 - Users typo service names. Read the request as the most likely intended well-known product — a popular product one edit away beats an obscure or tangential product that shares letters — and use the intended product's proper name throughout.
 - Real endpoints only, from your knowledge of the service's public API documentation. If you are not confident the service exists with a public OAuth2 + REST API, or it uses a non-OAuth2 scheme, reply {"error": "<one sentence why, and what would work instead>"} .
+- NEVER derive endpoint URLs from the product's name ("dashboard.<product>.com", "api.<product>.ai") — if you cannot recall the provider's actual documented OAuth endpoints, that means the integration cannot be built: reply {"error": ...}. Many well-known products (AI assistants, API-key-only platforms, consumer apps without developer programs) have NO user OAuth2 API — refuse those explicitly.
 - Paywalls: if there is NO free way to access this API at all (paid developer program, subscription-only API), reply {"error": "<say plainly that the API is paywalled and what it costs/requires>"} instead of a spec. If only SOME relevant data is behind a paid plan, still build the free-tier tools and state what's gated in "accessNotes".
 - READ-ONLY: request no write scopes; tools are GET only.
 - 2 to 5 tools, chosen for answering a user's questions about THEIR OWN data in the service.
@@ -49,6 +51,31 @@ Hard rules:
 - Every URL's hostname must appear in apiHosts. JSON only, no prose.`;
 
 export type ArchitectResult = { spec: DynamicServiceSpec } | { error: string };
+
+/**
+ * Reality check for a drafted spec: the model can hallucinate plausible-sounding hosts for
+ * products that have no OAuth API at all (a "dashboard.<product>.ai" that doesn't exist). A
+ * fabricated authorize endpoint either fails DNS or 404s; a real one answers something (200,
+ * 302, or a 4xx complaining about missing params). Returns an error string, or null when the
+ * endpoints appear real. Uses safeFetch so probes carry the same SSRF protections as all other
+ * outbound traffic.
+ */
+export async function verifySpecEndpoints(spec: DynamicServiceSpec): Promise<string | null> {
+  for (const [label, url] of [
+    ["authorization endpoint", spec.oauth.authorizeUrl],
+    ["token endpoint", spec.oauth.tokenUrl]
+  ] as const) {
+    try {
+      const response = await safeFetch(url, { method: "GET", signal: AbortSignal.timeout(8000) });
+      if (response.status === 404) {
+        return `its drafted ${label} (${url}) doesn't exist — this product likely has no public OAuth2 API`;
+      }
+    } catch {
+      return `its drafted ${label} (${url}) is unreachable — this product likely has no public OAuth2 API`;
+    }
+  }
+  return null;
+}
 
 function parseCandidate(content: string | null | undefined): Record<string, unknown> | null {
   try {

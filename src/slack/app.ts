@@ -17,7 +17,7 @@ import type { InvestigationPipeline } from "../investigation/pipeline.js";
 import { extractPublicUrl, PublicWebToolProvider } from "../connectors/publicWebTool.js";
 import { createLlmClient, llmModel } from "../llm/client.js";
 import { describeCatalog, findCatalogEntry } from "../mcp/catalog.js";
-import { synthesizeService } from "../services/architect.js";
+import { synthesizeService, verifySpecEndpoints } from "../services/architect.js";
 import { saveDynamicSpec } from "../services/dynamicSpec.js";
 import {
   allServices,
@@ -595,7 +595,21 @@ async function handleConnectIntent(
     // The architect may resolve a mangled name to something that already exists — never let a
     // typo's draft clobber a working integration; reuse the existing one instead.
     const existing = findService(result.spec.id);
-    if (!existing) saveDynamicSpec(result.spec);
+    if (!existing) {
+      // Reality check before anything persists: hallucinated integrations reference hosts that
+      // don't exist. Probing catches them here, instead of a user discovering it mid-setup.
+      const unreal = await verifySpecEndpoints(result.spec);
+      if (unreal) {
+        await reply({
+          response_type: "ephemeral",
+          text:
+            `I drafted a *${result.spec.label}* integration, but ${unreal}. ` +
+            "If it exposes a remote MCP endpoint instead, paste that URL with `connect <https://…>`."
+        });
+        return;
+      }
+      saveDynamicSpec(result.spec);
+    }
     const service = existing ?? findService(result.spec.id);
     if (!service) {
       await reply({ response_type: "ephemeral", text: "I built the integration but couldn't load it back — try again." });
