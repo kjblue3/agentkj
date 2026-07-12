@@ -218,7 +218,7 @@ describe("workspace administrator setup", () => {
 
   it("rejects credentials the provider preflight disowns and keeps the link retryable", async () => {
     const app = express();
-    let verdict: string | null = "Acme Records did not recognize this client ID.";
+    let verdict: { problem: string; overridable: boolean } | null = { problem: "Acme Records did not recognize this client ID.", overridable: false };
     registerServiceSetupRoutes(app, env, async () => true, async () => verdict);
     const secret = createServiceSetupIntent(spec.id, "T6", "UADMIN");
     const rejected = await request(app)

@@ -21,13 +21,19 @@ const PROBE_TIMEOUT_MS = 6000;
 const CLIENT_REJECTION =
   /invalid[_ ]?client|(?:unknown|invalid|unrecognized) +(?:client|application)|(?:client|application) +(?:was +)?not +found|"client_id"/i;
 
+export interface PreflightVerdict {
+  problem: string;
+  /** True when the signal is strong but not universal — the admin may insist and save anyway. */
+  overridable: boolean;
+}
+
 export type CredentialPreflight = (
   spec: DynamicServiceSpec,
   clientId: string,
   clientSecret: string,
   callbackUrl: string,
   label: string
-) => Promise<string | null>;
+) => Promise<PreflightVerdict | null>;
 
 export const clientCredentialPreflight: CredentialPreflight = async (
   spec,
@@ -53,7 +59,10 @@ export const clientCredentialPreflight: CredentialPreflight = async (
     if (response.status >= 400 && response.status < 500) {
       const body = (await response.text()).slice(0, 4000);
       if (CLIENT_REJECTION.test(body)) {
-        return `${label} did not recognize this client ID. Check that you copied it from the same application whose secret you are entering.`;
+        return {
+          problem: `${label} did not recognize this client ID. Check that you copied it from the same application whose secret you are entering.`,
+          overridable: false
+        };
       }
     }
   } catch {
@@ -84,8 +93,27 @@ export const clientCredentialPreflight: CredentialPreflight = async (
         return null;
       }
       if (code === "invalid_client") {
-        return `${label} rejected this client ID and secret as a pair. The secret may have been regenerated, or it belongs to a different application.`;
+        return {
+          problem: `${label} rejected this client ID and secret as a pair. The secret may have been regenerated, or it belongs to a different application.`,
+          overridable: false
+        };
       }
+    }
+    // A token endpoint that answers a fully-formed authentication attempt with a JSON 404 is
+    // refusing to acknowledge the client (GitHub's convention for unknown client ids — valid
+    // clients get an error body, never 404). Strong signal, but not an RFC guarantee, so the
+    // admin may override it after double-checking.
+    if (response.status === 404) {
+      const body = (await response.text()).slice(0, 4000);
+      try {
+        JSON.parse(body);
+      } catch {
+        return null;
+      }
+      return {
+        problem: `${label}'s token endpoint doesn't recognize this client ID — it answers "Not Found" for unknown applications. Double-check the ID against the provider's app settings.`,
+        overridable: true
+      };
     }
   } catch {
     // Fail open: absence of proof is not proof of a bad secret.

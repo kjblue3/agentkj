@@ -80,9 +80,10 @@ export function registerServiceSetupRoutes(
       return;
     }
     const callbackUrl = `${env.PUBLIC_BASE_URL?.replace(/\/$/, "") ?? ""}/auth/services/${service.id}/callback`;
-    const rejection = await preflight(service.dynamicSpec, clientId, clientSecret, callbackUrl, service.label).catch(() => null);
-    if (rejection) {
-      response.status(400).type("html").send(page("The provider rejected these credentials", `${escapeHtml(rejection)} This setup link is still valid.`, { backButton: true }));
+    const verdict = await preflight(service.dynamicSpec, clientId, clientSecret, callbackUrl, service.label).catch(() => null);
+    if (verdict && !(verdict.overridable && formatOverride)) {
+      const hint = verdict.overridable ? " If you’ve double-checked and it IS right, tick the format-override box and save again." : "";
+      response.status(400).type("html").send(page("The provider rejected these credentials", `${escapeHtml(verdict.problem)}${escapeHtml(hint)} This setup link is still valid.`, { backButton: true }));
       return;
     }
     const intent = consumeOAuthIntent(secret, "setup");

@@ -41,7 +41,8 @@ describe("client credential preflight", () => {
   it("rejects a client id the authorization endpoint disowns", async () => {
     mockedFetch.mockResolvedValueOnce(respond(401, "Error 401: invalid_client. The OAuth client was not found."));
     const verdict = await clientCredentialPreflight(spec, "112233445566778899", "secret-value", callback, spec.label);
-    expect(verdict).toContain("did not recognize this client ID");
+    expect(verdict?.problem).toContain("did not recognize this client ID");
+    expect(verdict?.overridable).toBe(false);
     const probeUrl = new URL(String(mockedFetch.mock.calls[0]?.[0]));
     expect(probeUrl.searchParams.get("client_id")).toBe("112233445566778899");
     expect(probeUrl.searchParams.get("redirect_uri")).toBe(callback);
@@ -50,7 +51,7 @@ describe("client credential preflight", () => {
   it("rejects field-keyed client_id complaints in provider JSON", async () => {
     mockedFetch.mockResolvedValueOnce(respond(400, '{"client_id": ["Value \\"8a3ecd\\" is not snowflake."]}'));
     const verdict = await clientCredentialPreflight(spec, "8a3ecd", "secret-value", callback, spec.label);
-    expect(verdict).toContain("did not recognize this client ID");
+    expect(verdict?.problem).toContain("did not recognize this client ID");
   });
 
   it("passes scope and redirect complaints — the client was recognized", async () => {
@@ -63,10 +64,23 @@ describe("client credential preflight", () => {
     mockedFetch.mockResolvedValueOnce(respond(200, "<html>login page</html>"));
     mockedFetch.mockResolvedValueOnce(respond(401, '{"error": "invalid_client"}'));
     const verdict = await clientCredentialPreflight(spec, "112233445566778899", "wrong-secret", callback, spec.label);
-    expect(verdict).toContain("rejected this client ID and secret as a pair");
+    expect(verdict?.problem).toContain("rejected this client ID and secret as a pair");
+    expect(verdict?.overridable).toBe(false);
     const tokenInit = mockedFetch.mock.calls[1]?.[1];
     expect(String((tokenInit?.headers as Record<string, string>)?.authorization)).toContain("Basic ");
     expect(String(tokenInit?.body)).toContain("grant_type=client_credentials");
+  });
+
+  it("flags GitHub-style JSON 404s from the token endpoint as an overridable unknown-client signal", async () => {
+    mockedFetch.mockResolvedValueOnce(respond(200, "<html>login page</html>"));
+    mockedFetch.mockResolvedValueOnce(respond(404, '{"error": "Not Found"}'));
+    const verdict = await clientCredentialPreflight(spec, "Ov23wrongwrongwrong1", "secret-value", callback, spec.label);
+    expect(verdict?.problem).toContain("doesn't recognize this client ID");
+    expect(verdict?.overridable).toBe(true);
+
+    mockedFetch.mockResolvedValueOnce(respond(200, "<html>login page</html>"));
+    mockedFetch.mockResolvedValueOnce(respond(404, "<html>plain missing page</html>"));
+    expect(await clientCredentialPreflight(spec, "112233445566778899", "secret-value", callback, spec.label)).toBeNull();
   });
 
   it("fails open on non-JSON errors, other grant errors, and unreachable providers", async () => {
