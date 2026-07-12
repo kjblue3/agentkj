@@ -6,8 +6,46 @@ import type { EvidenceItem } from "../types/schemas.js";
 import { ConnectionAccessError } from "../core/context.js";
 import type { DynamicServiceSpec, DynamicTool } from "./dynamicSpec.js";
 
-const RESPONSE_CHAR_LIMIT = 3500;
+const RESPONSE_CHAR_LIMIT = 12_000;
+const LEAF_STRING_LIMIT = 160;
 const REQUEST_TIMEOUT_MS = 15_000;
+
+/**
+ * Provider payloads bury the useful fields under opaque bulk — icon hashes, permission
+ * bitfields, feature flags. Blind tail-truncation used to silently eat the later items of a
+ * list (ask for 12 servers, the model sees 7 and bluffs about the rest). Shrinking long leaf
+ * strings first keeps every array element and every field name intact; only after that does
+ * the hard cap apply, and when it fires it says so instead of cutting mid-item.
+ */
+export function compactResponse(text: string, limit = RESPONSE_CHAR_LIMIT): string {
+  let output = text;
+  if (text.length > limit) {
+    try {
+      const parsed = JSON.parse(text) as unknown;
+      for (const leafLimit of [LEAF_STRING_LIMIT, 60, 24]) {
+        output = JSON.stringify(shrinkLeaves(parsed, leafLimit));
+        if (output.length <= limit) break;
+      }
+    } catch {
+      // Not JSON — nothing structural to preserve; the plain cap below handles it.
+    }
+  }
+  if (output.length > limit) {
+    return `${output.slice(0, limit - 70).trimEnd()} …[response truncated — refine the query to retrieve the rest]`;
+  }
+  return output;
+}
+
+function shrinkLeaves(value: unknown, leafLimit: number): unknown {
+  if (typeof value === "string") {
+    return value.length > leafLimit ? `${value.slice(0, leafLimit - 1)}…` : value;
+  }
+  if (Array.isArray(value)) return value.map((item) => shrinkLeaves(item, leafLimit));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, child]) => [key, shrinkLeaves(child, leafLimit)]));
+  }
+  return value;
+}
 
 /**
  * Executes a synthesized integration's tools. This is the sandbox that makes LLM-drafted specs
@@ -67,8 +105,8 @@ export class DynamicToolProvider implements AgentToolProvider {
         );
       }
       if (!response.ok) return { error: `${this.spec.label} returned HTTP ${response.status}.` };
-      const body = truncate(await response.text(), RESPONSE_CHAR_LIMIT);
-      return { data: body, evidence: [this.toEvidence(tool, url, body)] };
+      const body = compactResponse(await response.text());
+      return { data: body, evidence: [this.toEvidence(tool, url, truncate(body, 2800))] };
     } catch (error) {
       if (error instanceof ConnectionAccessError) throw error;
       return { error: error instanceof Error ? error.message : String(error) };

@@ -43,7 +43,7 @@ Rules, in priority order:
 For every kind, include one short, natural "acknowledgement" appropriate to what the user asked. Do not invent links, permissions, completion, or security facts.
 1. "approve <id> ..." and "share <id> ..." are literal bot-issued commands — return those kinds only for messages that start with those words followed by an id.
 2. "connect": the user wants to link/hook up/add one or MORE services, accounts, data sources, or MCP servers — in ANY phrasing ("can you connect <name>", "add my <name> and <other> accounts", "hook this up: https://..."). Also choose connect when the message is essentially just a link to the user's own account/profile/dashboard on a service that requires login (a fitness profile, a SaaS workspace) — pasting it means they want that service's data. Set "targets" to the list of service names or URLs, one entry per service, exactly as the user referenced each.
-3. "list_connectors": asking what is connected or available to connect.
+3. "list_connectors": asking what data sources are connected to or available to connect to THIS agent. NOT follow-ups about things an earlier answer mentioned — when thread context shows an investigation and the new message refers back to it ("can you list them?", "show me those", "break that down"), that continues the investigation: classify it "investigate".
 4. "help": empty greetings, "what can you do".
 5. Everything else is "investigate": a question or task to research. Set "relevantSources" to the subset of the user's CONNECTED sources that could plausibly contain the answer, judged by each source's data domain — include a source only if the question's subject matter matches it; return [] when none fit. A plain public article link to read counts as investigate, not connect. Also write one short, natural acknowledgement that fits the request without claiming work is already complete.
 
@@ -88,7 +88,8 @@ export async function classifyIntent(
   text: string,
   context: IntentContext,
   client: OpenAI | null,
-  model: string
+  model: string,
+  conversationContext?: string
 ): Promise<SlackIntent> {
   const trimmed = text.trim();
   if (!trimmed) return { kind: "help" };
@@ -108,6 +109,10 @@ export async function classifyIntent(
             `Connected sources for this user: ${context.connected.length > 0 ? context.connected.join(", ") : "(none)"}\n` +
             `Connectable services on this deployment:\n${context.connectableSummary}`
         },
+        ...(conversationContext ? [{
+          role: "system" as const,
+          content: `Recent messages in this Slack thread, oldest first (context for reading the new message):\n${conversationContext.slice(-3000)}`
+        }] : []),
         { role: "user", content: trimmed }
       ]
     });

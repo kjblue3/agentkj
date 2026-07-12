@@ -19,6 +19,15 @@ const hostSchema = z
 
 const httpsUrl = z.string().url().startsWith("https://");
 
+function compilesAsAnchoredRegExp(pattern: string): boolean {
+  try {
+    new RegExp(`^(?:${pattern})$`);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export const dynamicToolSchema = z.object({
   name: z.string().regex(/^[a-z][a-z0-9_]{2,40}$/),
   description: z.string().min(12).max(400),
@@ -54,7 +63,11 @@ export const dynamicServiceSpecSchema = z
       extraAuthParams: z.record(z.string(), z.string()).default({}),
       /** Dot-path into the token response for the provider-side account id (e.g. "athlete.id"). */
       accountIdPath: z.string().max(80).optional(),
-      accountLabelPath: z.string().max(80).optional()
+      accountLabelPath: z.string().max(80).optional(),
+      /** Anchored regex every valid client id fully matches — lets the setup form reject wrong-field pastes before they are stored. */
+      clientIdPattern: z.string().min(2).max(120).refine(compilesAsAnchoredRegExp, "must be a valid regular expression").optional(),
+      /** Shown beside the Client ID field: what the id looks like and where to copy it. */
+      clientIdHint: z.string().min(5).max(160).optional()
     }),
     /** Shown on the setup form: where to create the provider's OAuth app. May reference {CALLBACK_URL}. */
     setupInstructions: z.string().min(20).max(1500),

@@ -52,10 +52,30 @@ const spec = dynamicServiceSpecSchema.parse({
   tools: [{ name: "search_records", description: "Search workspace records by query text.", method: "GET", urlTemplate: "https://records.example.test/api/search", params: [{ name: "q", description: "Search query", required: true, location: "query" }] }]
 });
 
+const patternSpec = dynamicServiceSpecSchema.parse({
+  id: "acme-chat",
+  label: "Acme Chat",
+  aliases: ["acme chat"],
+  domain: "chat guilds, memberships, and message history",
+  homepage: "https://chat.example.test",
+  apiHosts: ["chat.example.test"],
+  oauth: {
+    authorizeUrl: "https://chat.example.test/oauth/authorize",
+    tokenUrl: "https://chat.example.test/oauth/token",
+    scope: "identify",
+    extraAuthParams: {},
+    clientIdPattern: "\\d{17,20}",
+    clientIdHint: "a 17-20 digit numeric application ID from the developer portal"
+  },
+  setupInstructions: "Register a read-only application and use {CALLBACK_URL} as its callback URL.",
+  tools: [{ name: "list_guilds", description: "List the guilds the authorized account belongs to.", method: "GET", urlTemplate: "https://chat.example.test/api/guilds", params: [] }]
+});
+
 beforeAll(() => {
   closeStateDatabase();
   Object.assign(process.env, env);
   saveServiceSpec(spec);
+  saveServiceSpec(patternSpec);
 });
 
 describe("workspace transactional state", () => {
@@ -126,11 +146,77 @@ describe("workspace administrator setup", () => {
 
   it("lets a verified administrator configure one workspace", async () => {
     const app = express();
-    registerServiceSetupRoutes(app, env, async () => true);
+    registerServiceSetupRoutes(app, env, async () => true, async () => null);
     const secret = createServiceSetupIntent(spec.id, "T2", "UADMIN");
     expect((await request(app).get(`/auth/service-setup/${secret}`)).status).toBe(200);
     expect((await request(app).post(`/auth/service-setup/${secret}`).type("form").send({ clientId: "workspace-client", clientSecret: "workspace-secret" })).status).toBe(200);
     expect(getWorkspaceClientCredentials("T2", spec.id, env)?.clientId).toBe("workspace-client");
+  });
+
+  it("rejects a malformed client id immediately and keeps the setup link retryable", async () => {
+    const app = express();
+    registerServiceSetupRoutes(app, env, async () => true, async () => null);
+    const secret = createServiceSetupIntent(patternSpec.id, "T4", "UADMIN");
+    const form = await request(app).get(`/auth/service-setup/${secret}`);
+    expect(form.status).toBe(200);
+    expect(form.text).toContain('pattern="\\d{17,20}"');
+    expect(form.text).toContain("17-20 digit numeric application ID");
+    expect(form.text).toContain('<a href="https://agent.example.test/auth/services/acme-chat/callback"');
+    expect(form.text).toContain(">Copy</button>");
+    const rejected = await request(app)
+      .post(`/auth/service-setup/${secret}`)
+      .type("form")
+      .send({ clientId: "8a3ecd7f30084402b3601595f80fda95", clientSecret: "real-secret-value" });
+    expect(rejected.status).toBe(400);
+    expect(rejected.text).toContain("17-20 digit numeric application ID");
+    expect(rejected.text).toContain("Go back");
+    expect(getWorkspaceClientCredentials("T4", patternSpec.id, env)).toBeUndefined();
+    const accepted = await request(app)
+      .post(`/auth/service-setup/${secret}`)
+      .type("form")
+      .send({ clientId: "112233445566778899", clientSecret: "real-secret-value" });
+    expect(accepted.status).toBe(200);
+    expect(accepted.text).toContain("close itself");
+    expect(getWorkspaceClientCredentials("T4", patternSpec.id, env)?.clientId).toBe("112233445566778899");
+  });
+
+  it("rejects swapped and mangled credential pastes for every service", async () => {
+    const app = express();
+    registerServiceSetupRoutes(app, env, async () => true);
+    const secret = createServiceSetupIntent(spec.id, "T5", "UADMIN");
+    const swapped = await request(app)
+      .post(`/auth/service-setup/${secret}`)
+      .type("form")
+      .send({ clientId: "same-value", clientSecret: "same-value" });
+    expect(swapped.status).toBe(400);
+    expect(swapped.text).toContain("identical");
+    const mangled = await request(app)
+      .post(`/auth/service-setup/${secret}`)
+      .type("form")
+      .send({ clientId: "client id with spaces", clientSecret: "secret-value" });
+    expect(mangled.status).toBe(400);
+    expect(getWorkspaceClientCredentials("T5", spec.id, env)).toBeUndefined();
+  });
+
+  it("rejects credentials the provider preflight disowns and keeps the link retryable", async () => {
+    const app = express();
+    let verdict: string | null = "Acme Records did not recognize this client ID.";
+    registerServiceSetupRoutes(app, env, async () => true, async () => verdict);
+    const secret = createServiceSetupIntent(spec.id, "T6", "UADMIN");
+    const rejected = await request(app)
+      .post(`/auth/service-setup/${secret}`)
+      .type("form")
+      .send({ clientId: "plausible-but-wrong", clientSecret: "secret-value" });
+    expect(rejected.status).toBe(400);
+    expect(rejected.text).toContain("did not recognize this client ID");
+    expect(getWorkspaceClientCredentials("T6", spec.id, env)).toBeUndefined();
+    verdict = null;
+    const accepted = await request(app)
+      .post(`/auth/service-setup/${secret}`)
+      .type("form")
+      .send({ clientId: "plausible-but-wrong", clientSecret: "secret-value" });
+    expect(accepted.status).toBe(200);
+    expect(getWorkspaceClientCredentials("T6", spec.id, env)?.clientId).toBe("plausible-but-wrong");
   });
 
   it("fails closed when administrator rights are revoked before submission", async () => {

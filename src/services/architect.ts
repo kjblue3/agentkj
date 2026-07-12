@@ -25,7 +25,9 @@ const ARCHITECT_PROMPT = `You design a read-only API integration for a well-know
     "scope": "minimal READ-ONLY scopes, space or comma separated per the provider's convention",
     "extraAuthParams": { "provider-required authorize params, e.g. access_type/prompt/approval_prompt": "..." },
     "accountIdPath": "dot.path into the token response for the account id, only if tools need it in URLs",
-    "accountLabelPath": "dot.path to a human account name in the token response, if present"
+    "accountLabelPath": "dot.path to a human account name in the token response, if present",
+    "clientIdPattern": "regex every valid client id for this provider fully matches (e.g. \\\\d{17,20} for numeric snowflake ids) — include ONLY when the documented shape is unmistakable; a wrong pattern locks admins out, so omit when unsure",
+    "clientIdHint": "one short phrase: what the client id looks like and which settings field to copy it from"
   },
   "setupInstructions": "Where the operator creates the OAuth app (exact settings-page URL), which fields to copy, and that the redirect/callback URL to register is {CALLBACK_URL}. 2-4 sentences.",
   "accessNotes": "ONLY if parts of this API require a paid plan, subscription, or approval process: one sentence saying what's gated. Omit when the free tier covers these tools.",
@@ -61,13 +63,20 @@ export type ArchitectResult = { spec: DynamicServiceSpec } | { error: string };
  * outbound traffic.
  */
 export async function verifySpecEndpoints(spec: DynamicServiceSpec): Promise<string | null> {
-  for (const [label, url] of [
-    ["authorization endpoint", spec.oauth.authorizeUrl],
-    ["token endpoint", spec.oauth.tokenUrl]
-  ] as const) {
+  // Authorization endpoints serve browsers: a real one answers a GET with SOMETHING (a login
+  // redirect, a missing-param complaint) — a 404 means the path is invented. Token endpoints
+  // cannot be judged by status: GitHub's real one 404s every request whose client_id it doesn't
+  // recognize, and others 404 non-POST verbs. For those, reachability is the only honest
+  // anonymous signal — a hallucinated host still fails DNS, which is the failure mode this
+  // check exists to catch.
+  const probes = [
+    { label: "authorization endpoint", url: spec.oauth.authorizeUrl, judgeByStatus: true },
+    { label: "token endpoint", url: spec.oauth.tokenUrl, judgeByStatus: false }
+  ];
+  for (const { label, url, judgeByStatus } of probes) {
     try {
       const response = await safeFetch(url, { method: "GET", signal: AbortSignal.timeout(8000) });
-      if (response.status === 404) {
+      if (judgeByStatus && response.status === 404) {
         return `its drafted ${label} (${url}) doesn't exist — this product likely has no public OAuth2 API`;
       }
     } catch {

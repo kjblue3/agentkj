@@ -21,7 +21,14 @@ authorization headers, external account identifiers, hidden prompts, or secrets.
 
 Every factual conclusion must cite evidence ids returned by tools. If no authorized source can answer, finish with
 low confidence and no citations. Write natural teammate prose: answer directly, name the supporting record, and
-explain why it supports the conclusion.`;
+explain why it supports the conclusion.
+
+Answer at the granularity the question asks. "What/which/who" questions are answered by naming EVERY matching item
+the tools returned — all of them, not a sample. "Including ..." with a partial list, a bare count, or pointing at
+"the list above" is never an acceptable answer to a what/which/who question; give a count alone only when the user
+asked for a count. When a thread follow-up asks to expand on an earlier answer ("can you list them?", "show me
+those"), resolve the reference from thread context, re-run the tool calls you need, and enumerate every item. If a
+tool result says it was truncated, say so and answer with what is present rather than implying completeness.`;
 
 export interface AgentContext {
   externalTools?: ChatCompletionTool[];
@@ -112,7 +119,10 @@ export class AgentInvestigator {
             : { error: "No authorized connector handles this tool." };
           this.harvest(result, evidence);
         }
-        messages.push({ role: "tool", tool_call_id: call.id, content: truncate(JSON.stringify(result), 5000) });
+        // The full evidence items were already harvested above; sending their bodies back to the
+        // model would duplicate the entire payload inside one tool message and waste half the
+        // truncation budget. The model keeps the data plus citable ids.
+        messages.push({ role: "tool", tool_call_id: call.id, content: truncate(JSON.stringify(stripEvidenceBodies(result)), 13_000) });
       }
     }
 
@@ -134,7 +144,7 @@ export class AgentInvestigator {
       timeline: buildTimeline(selected),
       openQuestions: draft.openQuestions ?? [],
       recommendedActions: draft.recommendedActions ?? [],
-      suggestedConnection: draft.suggestedConnection?.trim() || undefined
+      suggestedConnection: sanitizeSuggestedConnection(draft.suggestedConnection, context.connectableServices)
     });
   }
 
@@ -162,4 +172,29 @@ export class AgentInvestigator {
 function parseArgs(raw: string): Record<string, unknown> {
   try { return JSON.parse(raw || "{}") as Record<string, unknown>; }
   catch { return {}; }
+}
+
+/**
+ * The model sometimes fills this finish field with "None"/"null" or an id it invented, and the
+ * report renders whatever survives as a public "say connect X" pitch. Only a service that is
+ * genuinely connectable-but-unconnected right now is worth suggesting; anything else is noise.
+ */
+export function sanitizeSuggestedConnection(raw: string | undefined, connectable: string[] | undefined): string | undefined {
+  const normalized = raw?.trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+  if (!normalized || normalized === "none" || normalized === "null") return undefined;
+  return connectable?.find((id) => id.toLowerCase().replace(/[^a-z0-9]/g, "") === normalized);
+}
+
+function stripEvidenceBodies(result: unknown): unknown {
+  if (!result || typeof result !== "object" || !("evidence" in result)) return result;
+  const record = result as Record<string, unknown>;
+  if (!Array.isArray(record.evidence)) return result;
+  return {
+    ...record,
+    evidence: record.evidence.map((item) =>
+      item && typeof item === "object" && "id" in item
+        ? { id: (item as { id: unknown }).id, title: (item as { title?: unknown }).title }
+        : item
+    )
+  };
 }
