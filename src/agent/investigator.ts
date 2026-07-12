@@ -144,7 +144,7 @@ export class AgentInvestigator {
       timeline: buildTimeline(selected),
       openQuestions: draft.openQuestions ?? [],
       recommendedActions: draft.recommendedActions ?? [],
-      suggestedConnection: draft.suggestedConnection?.trim() || undefined
+      suggestedConnection: sanitizeSuggestedConnection(draft.suggestedConnection, context.connectableServices)
     });
   }
 
@@ -172,6 +172,17 @@ export class AgentInvestigator {
 function parseArgs(raw: string): Record<string, unknown> {
   try { return JSON.parse(raw || "{}") as Record<string, unknown>; }
   catch { return {}; }
+}
+
+/**
+ * The model sometimes fills this finish field with "None"/"null" or an id it invented, and the
+ * report renders whatever survives as a public "say connect X" pitch. Only a service that is
+ * genuinely connectable-but-unconnected right now is worth suggesting; anything else is noise.
+ */
+export function sanitizeSuggestedConnection(raw: string | undefined, connectable: string[] | undefined): string | undefined {
+  const normalized = raw?.trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+  if (!normalized || normalized === "none" || normalized === "null") return undefined;
+  return connectable?.find((id) => id.toLowerCase().replace(/[^a-z0-9]/g, "") === normalized);
 }
 
 function stripEvidenceBodies(result: unknown): unknown {
