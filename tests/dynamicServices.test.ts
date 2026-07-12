@@ -150,6 +150,13 @@ describe("verifySpecEndpoints", () => {
     missing.apiHosts = ["missing.example", "ghost.example"];
     expect(await verifySpecEndpoints(dynamicServiceSpecSchema.parse(missing))).toContain("doesn't exist");
   });
+
+  it("tolerates token endpoints that 404 anonymous probes (GitHub-style) when the authorize endpoint answers", async () => {
+    const githubStyle = structuredClone(validSpec);
+    githubStyle.apiHosts = [...githubStyle.apiHosts, "missing.example"];
+    githubStyle.oauth.tokenUrl = "https://missing.example/login/oauth/access_token";
+    expect(await verifySpecEndpoints(dynamicServiceSpecSchema.parse(githubStyle))).toBeNull();
+  });
 });
 
 describe("compactResponse", () => {

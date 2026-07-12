@@ -63,13 +63,20 @@ export type ArchitectResult = { spec: DynamicServiceSpec } | { error: string };
  * outbound traffic.
  */
 export async function verifySpecEndpoints(spec: DynamicServiceSpec): Promise<string | null> {
-  for (const [label, url] of [
-    ["authorization endpoint", spec.oauth.authorizeUrl],
-    ["token endpoint", spec.oauth.tokenUrl]
-  ] as const) {
+  // Authorization endpoints serve browsers: a real one answers a GET with SOMETHING (a login
+  // redirect, a missing-param complaint) — a 404 means the path is invented. Token endpoints
+  // cannot be judged by status: GitHub's real one 404s every request whose client_id it doesn't
+  // recognize, and others 404 non-POST verbs. For those, reachability is the only honest
+  // anonymous signal — a hallucinated host still fails DNS, which is the failure mode this
+  // check exists to catch.
+  const probes = [
+    { label: "authorization endpoint", url: spec.oauth.authorizeUrl, judgeByStatus: true },
+    { label: "token endpoint", url: spec.oauth.tokenUrl, judgeByStatus: false }
+  ];
+  for (const { label, url, judgeByStatus } of probes) {
     try {
       const response = await safeFetch(url, { method: "GET", signal: AbortSignal.timeout(8000) });
-      if (response.status === 404) {
+      if (judgeByStatus && response.status === 404) {
         return `its drafted ${label} (${url}) doesn't exist — this product likely has no public OAuth2 API`;
       }
     } catch {
