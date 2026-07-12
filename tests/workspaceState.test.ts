@@ -198,9 +198,27 @@ describe("workspace administrator setup", () => {
     expect(getWorkspaceClientCredentials("T5", spec.id, env)).toBeUndefined();
   });
 
+  it("lets an administrator override a wrong drafted format pattern, still preflighted", async () => {
+    const app = express();
+    registerServiceSetupRoutes(app, env, async () => true, async () => null);
+    const secret = createServiceSetupIntent(patternSpec.id, "T7", "UADMIN");
+    const rejected = await request(app)
+      .post(`/auth/service-setup/${secret}`)
+      .type("form")
+      .send({ clientId: "Ov23ctw7wlDyXvFszZjf", clientSecret: "real-secret-value" });
+    expect(rejected.status).toBe(400);
+    expect(rejected.text).toContain("format-override");
+    const overridden = await request(app)
+      .post(`/auth/service-setup/${secret}`)
+      .type("form")
+      .send({ clientId: "Ov23ctw7wlDyXvFszZjf", clientSecret: "real-secret-value", formatOverride: "yes" });
+    expect(overridden.status).toBe(200);
+    expect(getWorkspaceClientCredentials("T7", patternSpec.id, env)?.clientId).toBe("Ov23ctw7wlDyXvFszZjf");
+  });
+
   it("rejects credentials the provider preflight disowns and keeps the link retryable", async () => {
     const app = express();
-    let verdict: string | null = "Acme Records did not recognize this client ID.";
+    let verdict: { problem: string; overridable: boolean } | null = { problem: "Acme Records did not recognize this client ID.", overridable: false };
     registerServiceSetupRoutes(app, env, async () => true, async () => verdict);
     const secret = createServiceSetupIntent(spec.id, "T6", "UADMIN");
     const rejected = await request(app)
