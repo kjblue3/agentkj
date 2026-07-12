@@ -14,7 +14,7 @@ vi.mock("../src/security/publicUrl.js", () => ({
 
 import { synthesizeService, verifySpecEndpoints } from "../src/services/architect.js";
 import { dynamicServiceSpecSchema } from "../src/services/dynamicSpec.js";
-import { DynamicToolProvider } from "../src/services/dynamicTools.js";
+import { compactResponse, DynamicToolProvider } from "../src/services/dynamicTools.js";
 
 const validSpec = {
   id: "acmefit",
@@ -149,5 +149,32 @@ describe("verifySpecEndpoints", () => {
     for (const key of ["authorizeUrl", "tokenUrl"] as const) missing.oauth[key] = missing.oauth[key].replace("ghost", "missing");
     missing.apiHosts = ["missing.example", "ghost.example"];
     expect(await verifySpecEndpoints(dynamicServiceSpecSchema.parse(missing))).toContain("doesn't exist");
+  });
+});
+
+describe("compactResponse", () => {
+  it("keeps every list item when shrinking an oversized payload — no server left behind", () => {
+    const guilds = Array.from({ length: 12 }, (_, index) => ({
+      id: `10000000000000${index.toString().padStart(4, "0")}`,
+      name: `Guild Number ${index}`,
+      icon: "a".repeat(400),
+      banner: "b".repeat(400),
+      permissions: "562949953421311",
+      features: Array.from({ length: 12 }, (_, f) => `FEATURE_FLAG_${f}_${"x".repeat(30)}`)
+    }));
+    const raw = JSON.stringify(guilds);
+    expect(raw.length).toBeGreaterThan(12_000);
+    const compacted = compactResponse(raw);
+    expect(compacted.length).toBeLessThanOrEqual(12_000);
+    for (let index = 0; index < 12; index++) expect(compacted).toContain(`Guild Number ${index}`);
+    const parsed = JSON.parse(compacted) as { name: string }[];
+    expect(parsed).toHaveLength(12);
+  });
+
+  it("leaves small responses untouched and labels unsalvageable overflow", () => {
+    expect(compactResponse('{"ok":true}')).toBe('{"ok":true}');
+    const overflowing = compactResponse("plain text ".repeat(2000));
+    expect(overflowing.length).toBeLessThanOrEqual(12_000);
+    expect(overflowing).toContain("[response truncated");
   });
 });
