@@ -99,7 +99,7 @@ export async function classifyIntent(
     const response = await client.chat.completions.create({
       model,
       temperature: 0,
-      max_tokens: 200,
+      max_tokens: 500,
       response_format: { type: "json_object" },
       messages: [
         { role: "system", content: CLASSIFIER_SYSTEM_PROMPT },

@@ -17,6 +17,16 @@ export function llmModel(env: NodeJS.ProcessEnv = process.env): string {
   return env.OPENAI_MODEL ?? "gpt-4.1-mini";
 }
 
+/**
+ * Gemini spends hidden "thinking" tokens on every call by default — the single biggest latency
+ * cost in the agent loop. Capping reasoning effort centrally speeds every request; override with
+ * LLM_REASONING_EFFORT (none|low|medium|high) when more deliberation is worth the wait.
+ */
+export function llmRequestDefaults(env: NodeJS.ProcessEnv = process.env): Record<string, unknown> {
+  if (!env.LLM_BASE_URL?.includes("generativelanguage")) return {};
+  return { reasoning_effort: env.LLM_REASONING_EFFORT?.trim() || "low" };
+}
+
 export interface RateLimitDetails { waitMs: number; retryAt: Date; }
 
 export function rateLimitDetails(error: unknown): RateLimitDetails | null {
@@ -55,7 +65,12 @@ export class LlmGateway {
   private readonly waiters: Array<() => void> = [];
   readonly maxConcurrency: number;
 
-  constructor(keys: string[], baseURL?: string, maxConcurrency = Math.min(4, Math.max(1, keys.length))) {
+  constructor(
+    keys: string[],
+    baseURL?: string,
+    maxConcurrency = Math.min(4, Math.max(1, keys.length)),
+    private readonly requestDefaults: Record<string, unknown> = {}
+  ) {
     this.clients = keys.map((apiKey) => new OpenAI({ apiKey, baseURL }));
     this.cooldownUntil = new Array(keys.length).fill(0);
     this.maxConcurrency = maxConcurrency;
@@ -67,6 +82,7 @@ export class LlmGateway {
   }
 
   async create(...args: Parameters<OpenAI["chat"]["completions"]["create"]>) {
+    args[0] = { ...this.requestDefaults, ...args[0] } as (typeof args)[0];
     await this.acquire();
     try {
       let attempted = 0;
@@ -124,9 +140,10 @@ export function sharedLlmGateway(env: NodeJS.ProcessEnv = process.env): LlmGatew
   if (keys.length === 0) return null;
   const max = Number(env.MAX_CONCURRENT_INVESTIGATIONS);
   const concurrency = Number.isFinite(max) && max > 0 ? Math.floor(max) : Math.min(4, Math.max(1, keys.length));
-  const signature = JSON.stringify([keys, env.LLM_BASE_URL?.trim() || "", concurrency]);
+  const defaults = llmRequestDefaults(env);
+  const signature = JSON.stringify([keys, env.LLM_BASE_URL?.trim() || "", concurrency, defaults]);
   if (!shared || shared.signature !== signature) {
-    shared = { signature, gateway: new LlmGateway(keys, env.LLM_BASE_URL?.trim() || undefined, concurrency) };
+    shared = { signature, gateway: new LlmGateway(keys, env.LLM_BASE_URL?.trim() || undefined, concurrency, defaults) };
   }
   return shared.gateway;
 }
