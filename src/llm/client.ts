@@ -12,6 +12,7 @@ export function llmApiKey(env: NodeJS.ProcessEnv = process.env): string | undefi
 export function llmConfigured(env: NodeJS.ProcessEnv = process.env): boolean { return llmApiKeys(env).length > 0; }
 export function llmModel(env: NodeJS.ProcessEnv = process.env): string {
   if (env.LLM_MODEL) return env.LLM_MODEL;
+  if (env.LLM_BASE_URL?.includes("generativelanguage")) return "gemini-2.5-flash";
   if (env.LLM_BASE_URL?.includes("groq")) return "llama-3.3-70b-versatile";
   return env.OPENAI_MODEL ?? "gpt-4.1-mini";
 }
