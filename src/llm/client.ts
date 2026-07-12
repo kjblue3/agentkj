@@ -27,6 +27,14 @@ export function llmRequestDefaults(env: NodeJS.ProcessEnv = process.env): Record
   return { reasoning_effort: env.LLM_REASONING_EFFORT?.trim() || "low" };
 }
 
+/** Per-call reasoning bump for calls where routing quality beats raw speed; no-op off Gemini. */
+export function llmReasoningOverride(
+  effort: "none" | "low" | "medium" | "high",
+  env: NodeJS.ProcessEnv = process.env
+): Record<string, unknown> {
+  return env.LLM_BASE_URL?.includes("generativelanguage") ? { reasoning_effort: effort } : {};
+}
+
 export interface RateLimitDetails { waitMs: number; retryAt: Date; }
 
 export function rateLimitDetails(error: unknown): RateLimitDetails | null {
