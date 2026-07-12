@@ -319,7 +319,6 @@ export async function runInvestigation(args: {
     const publicUrl = extractPublicUrl(question);
     const report = await pipeline.investigate(question, {
       context,
-      publicUrl,
       toolProviders: [
         ...available.providers,
         remoteProvider,
@@ -331,8 +330,7 @@ export async function runInvestigation(args: {
       connectableServices: allServices().filter((service) =>
         !available.descriptors.some((connection) => connection.serviceId === service.id)
       ).map((service) => service.id),
-      conversationContext,
-      requireLlm: true
+      conversationContext
     });
     updateInvestigationJob(jobId, "completed", { result: report });
     const actionId = createActionIntent({
