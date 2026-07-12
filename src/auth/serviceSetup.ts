@@ -48,7 +48,7 @@ export function registerServiceSetupRoutes(
       `<p><strong>Callback URL:</strong> ${copyableValue(callbackUrl)}</p>` +
       `<p>This read-only integration may contact: ${service.dynamicSpec.apiHosts.map((host) => `<code>${escapeHtml(host)}</code>`).join(", ")}.</p>` +
       (replacing ? "<p><strong>Replacing these credentials will require every connected member to authorize again.</strong></p>" : "") +
-      `<form method="post"><label>Client ID<input name="clientId" required autocomplete="off"${oauth.clientIdPattern ? ` pattern="${escapeHtml(oauth.clientIdPattern)}"` : ""}${oauth.clientIdHint ? ` title="${escapeHtml(oauth.clientIdHint)}"` : ""}>${oauth.clientIdHint ? `<small>${escapeHtml(oauth.clientIdHint)}</small>` : ""}</label><label>Client secret<input name="clientSecret" type="password" required autocomplete="off"></label>${replacing ? '<label class="confirm"><input name="confirmReplace" type="checkbox" value="yes" required> I understand existing grants will require reauthorization.</label>' : ""}<button type="submit">${replacing ? "Replace" : "Save"} workspace configuration</button></form>` +
+      `<form method="post"><label>Client ID<input name="clientId" required autocomplete="off"${oauth.clientIdPattern ? ` pattern="${escapeHtml(oauth.clientIdPattern)}"` : ""}${oauth.clientIdHint ? ` title="${escapeHtml(oauth.clientIdHint)}"` : ""}>${oauth.clientIdHint ? `<small>${escapeHtml(oauth.clientIdHint)}</small>` : ""}</label><label>Client secret<input name="clientSecret" type="password" required autocomplete="off"></label>${oauth.clientIdPattern ? `<label class="confirm"><input name="formatOverride" type="checkbox" value="yes" onchange="var i=this.form.clientId;if(this.checked){i.dataset.p=i.getAttribute('pattern')||'';i.removeAttribute('pattern')}else if(i.dataset.p){i.setAttribute('pattern',i.dataset.p)}"> My client ID doesn’t match the expected format, but I’ve double-checked it against the provider’s settings page.</label>` : ""}${replacing ? '<label class="confirm"><input name="confirmReplace" type="checkbox" value="yes" required> I understand existing grants will require reauthorization.</label>' : ""}<button type="submit">${replacing ? "Replace" : "Save"} workspace configuration</button></form>` +
       `<p>These values go directly to the backend and are never posted to Slack or sent to the language model.</p>`;
     response.type("html").send(renderPage(`${replacing ? "Replace" : "Configure"} ${service.label}`, body));
   });
@@ -73,7 +73,8 @@ export function registerServiceSetupRoutes(
       response.status(400).type("html").send(page("Confirmation required", "Credential replacement was not confirmed. Go back and confirm to continue.", { backButton: true }));
       return;
     }
-    const problem = clientCredentialProblem(service, clientId, clientSecret);
+    const formatOverride = request.body?.formatOverride === "yes";
+    const problem = clientCredentialProblem(service, clientId, clientSecret, formatOverride);
     if (problem) {
       response.status(400).type("html").send(page("Check the credentials", `${escapeHtml(problem)} This setup link is still valid.`, { backButton: true }));
       return;
@@ -113,7 +114,8 @@ export function registerServiceSetupRoutes(
 function clientCredentialProblem(
   service: NonNullable<ReturnType<typeof findService>>,
   clientId: string,
-  clientSecret: string
+  clientSecret: string,
+  formatOverride = false
 ): string | null {
   if (clientId === clientSecret) {
     return "The client ID and client secret are identical — one value was pasted into the wrong field.";
@@ -124,12 +126,15 @@ function clientCredentialProblem(
   if (clientSecret.length > 500 || /[^\x21-\x7e]/.test(clientSecret)) {
     return "The client secret contains spaces or unusual characters. Copy it exactly from the provider's application settings.";
   }
+  // The expected-format pattern is LLM-drafted and can simply be wrong (a provider's newer id
+  // generation, say) — so the admin can override it on the form. The universal checks above and
+  // the live provider preflight still apply; only this guess is skippable.
   const pattern = service.dynamicSpec.oauth.clientIdPattern;
-  if (pattern) {
+  if (pattern && !formatOverride) {
     try {
       if (!new RegExp(`^(?:${pattern})$`).test(clientId)) {
         const hint = service.dynamicSpec.oauth.clientIdHint;
-        return `That doesn't look like a ${service.label} client ID${hint ? ` — expected ${hint}` : ""}. Check that you copied the client ID, not the secret or a key from another product.`;
+        return `That doesn't look like a ${service.label} client ID${hint ? ` — expected ${hint}` : ""}. Check that you copied the client ID, not the secret or a key from another product. If you've double-checked and it IS right, tick the format-override box and save again.`;
       }
     } catch {
       // A stored pattern that no longer compiles must never lock administrators out.

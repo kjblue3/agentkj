@@ -26,7 +26,7 @@ const ARCHITECT_PROMPT = `You design a read-only API integration for a well-know
     "extraAuthParams": { "provider-required authorize params, e.g. access_type/prompt/approval_prompt": "..." },
     "accountIdPath": "dot.path into the token response for the account id, only if tools need it in URLs",
     "accountLabelPath": "dot.path to a human account name in the token response, if present",
-    "clientIdPattern": "regex every valid client id for this provider fully matches (e.g. \\\\d{17,20} for numeric snowflake ids) — include ONLY when the documented shape is unmistakable; a wrong pattern locks admins out, so omit when unsure",
+    "clientIdPattern": "regex every valid client id fully matches — include ONLY when the id is documented as purely numeric (e.g. \\\\d{17,20} for snowflake ids). Providers change alphanumeric id formats over generations (hex, prefixed, base62), so for ANY non-numeric format omit this entirely; a wrong pattern locks administrators out",
     "clientIdHint": "one short phrase: what the client id looks like and which settings field to copy it from"
   },
   "setupInstructions": "Where the operator creates the OAuth app (exact settings-page URL), which fields to copy, and that the redirect/callback URL to register is {CALLBACK_URL}. 2-4 sentences.",
