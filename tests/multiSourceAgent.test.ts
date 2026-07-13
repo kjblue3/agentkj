@@ -88,4 +88,61 @@ describe("multi-source agent investigations", () => {
     expect(result.shortAnswer).toContain("migration rehearsal failed");
     expect(result.confidence).toBe("high");
   });
+
+  it("replaces a confident answer with an honest no-answer when a source was searched but nothing was cited", async () => {
+    const create = vi.fn()
+      .mockResolvedValueOnce(toolCall("call-search", "connection_status__search_rows", { query: "what happened yesterday" }))
+      .mockResolvedValueOnce(toolCall("call-finish", "finish", {
+        // The fabrication case: the search returned nothing, but the model asserts a conclusion
+        // anyway and even tacks on a trailing clarifying question.
+        shortAnswer: "Yesterday there was an unexpected server outage that impacted availability. The team has resolved it. what happened?",
+        confidence: "medium",
+        likelyRootCause: "An unspecified outage.",
+        citedEvidenceIds: []
+      }));
+    const agent = new AgentInvestigator({ chat: { completions: { create } } } as never, "test-model");
+
+    const result = await agent.investigate("what happened yesterday", {
+      externalTools: [{
+        type: "function",
+        function: {
+          name: "connection_status__search_rows",
+          description: "Search project status rows.",
+          parameters: { type: "object", properties: { query: { type: "string" } } }
+        }
+      }],
+      externalCall: async () => ({ evidence: [] })
+    });
+
+    expect(result.confidence).toBe("low");
+    expect(result.evidence).toEqual([]);
+    expect(result.shortAnswer).not.toContain("server outage");
+    expect(result.shortAnswer).not.toContain("what happened?");
+    expect(result.shortAnswer).toContain("didn’t find records");
+  });
+
+  it("does not override an own-state answer that legitimately makes no tool calls and cites nothing", async () => {
+    const create = vi.fn().mockResolvedValueOnce(toolCall("call-finish", "finish", {
+      shortAnswer: "Two sources are connected for this workspace: a status service and a discussion service.",
+      confidence: "high",
+      likelyRootCause: "Answered from the connection catalog.",
+      citedEvidenceIds: []
+    }));
+    const agent = new AgentInvestigator({ chat: { completions: { create } } } as never, "test-model");
+
+    const result = await agent.investigate("what sources are connected?", {
+      externalTools: [{
+        type: "function",
+        function: {
+          name: "connection_status__search_rows",
+          description: "Search project status rows.",
+          parameters: { type: "object", properties: { query: { type: "string" } } }
+        }
+      }],
+      externalCall: async () => ({ evidence: [] })
+    });
+
+    expect(result.shortAnswer).toContain("Two sources are connected");
+    expect(result.confidence).toBe("high");
+  });
 });

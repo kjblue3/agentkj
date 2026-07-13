@@ -76,6 +76,10 @@ export class AgentInvestigator {
 
   async investigate(question: string, context: AgentContext): Promise<InvestigationResult> {
     const evidence = new Map<string, EvidenceItem>();
+    // Did the model actually go looking for evidence this run? Own-state questions ("what's
+    // connected?") answer from the catalog with no tool calls; an investigation that queried a
+    // source but cites nothing is the fabrication case we guard against below.
+    let searchedForEvidence = false;
     const tools = [
       ...(context.externalTools ?? []),
       tool("finish", "Finish with an evidence-backed answer or an honest no-answer.", {
@@ -128,6 +132,7 @@ export class AgentInvestigator {
           finish = args as unknown as FinishArgs;
           result = { accepted: true };
         } else {
+          searchedForEvidence = true;
           result = context.externalCall
             ? await context.externalCall(call.function.name, args)
             : { error: "No authorized connector handles this tool." };
@@ -149,6 +154,24 @@ export class AgentInvestigator {
     };
     const cited = [...new Set(draft.citedEvidenceIds ?? [])].flatMap((id) => evidence.get(id) ? [evidence.get(id)!] : []);
     const selected = cited.length > 0 ? cited : draft.confidence === "low" ? [] : [...evidence.values()];
+    // Faithfulness guardrail: if the model queried a source but the answer rests on ZERO evidence,
+    // its prose is ungrounded — models fill that vacuum with a plausible-sounding fabrication (and
+    // sometimes a trailing clarifying question). Replace it with an honest no-answer rather than
+    // ship a confident guess. Own-state answers never trip this (searchedForEvidence stays false);
+    // grounded answers always have at least one selected record.
+    if (searchedForEvidence && selected.length === 0) {
+      return investigationResultSchema.parse({
+        question,
+        shortAnswer: "I swept the connected sources for this and didn’t find records that answer it, so I won’t guess. Try naming the project, service, or time frame more specifically — or connect a source that would hold this.",
+        confidence: "low",
+        likelyRootCause: "No authorized source returned evidence supporting an answer.",
+        evidence: [],
+        timeline: [],
+        openQuestions: [],
+        recommendedActions: [],
+        suggestedConnection: sanitizeSuggestedConnection(draft.suggestedConnection, context.connectableServices)
+      });
+    }
     return investigationResultSchema.parse({
       question,
       shortAnswer: draft.shortAnswer,
