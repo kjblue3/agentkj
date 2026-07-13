@@ -4,25 +4,25 @@ import { evidenceItemSchema } from "../src/types/schemas.js";
 describe("evidence normalization", () => {
   it("applies collection defaults and validates fields", () => {
     const item = evidenceItemSchema.parse({
-      id: "sample",
-      source: "docs",
+      id: "record-1",
+      source: "runtime-service",
       title: "A decision",
       body: "A grounded decision record.",
-      url: "https://example.com/sample",
+      url: "https://records.example/record-1",
       timestamp: "2026-01-01T00:00:00.000Z"
     });
     expect(item.entities).toEqual([]);
     expect(item.tags).toEqual([]);
   });
 
-  it("accepts sources it has never seen (services are an open set), but not empty ones", () => {
+  it("accepts an open source id but rejects an empty one", () => {
     expect(evidenceItemSchema.parse({
-      id: "ok", source: "acmefit", title: "Run", body: "5 mi",
-      url: "https://example.com", timestamp: "2026-01-01T00:00:00.000Z"
-    }).source).toBe("acmefit");
+      id: "record-2", source: "runtime-source", title: "Record", body: "Body",
+      url: "https://records.example/record-2", timestamp: "2026-01-01T00:00:00.000Z"
+    }).source).toBe("runtime-source");
     expect(() => evidenceItemSchema.parse({
-      id: "bad", source: "", title: "Bad", body: "Bad",
-      url: "https://example.com", timestamp: "2026-01-01T00:00:00.000Z"
+      id: "record-3", source: "", title: "Record", body: "Body",
+      url: "https://records.example/record-3", timestamp: "2026-01-01T00:00:00.000Z"
     })).toThrow();
   });
 });

@@ -39,14 +39,14 @@ function connection(overrides: Partial<RemoteConnection> = {}): RemoteConnection
 describe("remote connection authorization", () => {
   it("normalizes arbitrary MCP output into citable evidence", () => {
     const item = remoteConnectorEvidence(
-      connection({ id: "sheets-1", name: "sheets.example", url: "https://sheets.example/mcp" }),
+      connection({ id: "status-1", name: "status.example", url: "https://status.example/mcp" }),
       { name: "search_rows" },
-      { rows: [{ project: "Atlas", status: "late" }] },
+      { rows: [{ project: "Project", status: "late" }] },
       new Date("2026-07-12T12:00:00.000Z")
     );
     expect(evidenceItemSchema.parse(item)).toEqual(item);
-    expect(item.body).toContain("Atlas");
-    expect(item.source).toBe("mcp:sheets.example");
+    expect(item.body).toContain("Project");
+    expect(item.source).toBe("mcp:status.example");
   });
 
   it("orders personal, shared, then delegated credentials", () => {
@@ -67,6 +67,20 @@ describe("remote connection authorization", () => {
       { userId: "U1", workspaceId: "T1", channelId: "C1" },
       [delegated, shared, personal]
     ).map(({ id }) => id)).toEqual(["personal", "shared", "delegated"]);
+  });
+
+  it("applies the prompt's owner scope after normal authorization", () => {
+    const requester = connection({ id: "requester", ownerSlackUserId: "U1" });
+    const teammate = connection({
+      id: "teammate",
+      ownerSlackUserId: "U2",
+      scope: "shared",
+      allowedSlackChannelIds: ["C1"]
+    });
+    expect(selectAuthorizedConnections(
+      { userId: "U1", workspaceId: "T1", channelId: "C1", ownerUserIds: ["U1"] },
+      [requester, teammate]
+    ).map(({ id }) => id)).toEqual(["requester"]);
   });
 
   it("checks user, channel, tool, provider scope, and active approval", () => {

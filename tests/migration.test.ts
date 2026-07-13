@@ -18,10 +18,10 @@ describe("legacy state migration", () => {
 
   it("imports generic specifications and workspace credentials once, then archives JSON", () => {
     writeFileSync(path.join(directory, "dynamicServices.local.json"), JSON.stringify({
-      "acme-records": { id: "acme-records", label: "Acme Records" }
+      "records-service": { id: "records-service", label: "Records Service" }
     }));
     writeFileSync(path.join(directory, "serviceSetup.local.json"), JSON.stringify({
-      "acme-records": { clientId: "client", clientSecret: "secret", savedAt: "2026-01-01T00:00:00.000Z" }
+      "records-service": { clientId: "client", clientSecret: "secret", savedAt: "2026-01-01T00:00:00.000Z" }
     }));
     closeStateDatabase();
     const db = stateDatabase(env);

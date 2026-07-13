@@ -8,8 +8,6 @@ import { investigationContext } from "../src/core/context.js";
 import { closeStateDatabase, stateDatabase } from "../src/state/database.js";
 import {
   consumeOAuthIntent,
-  consumeActionIntent,
-  createActionIntent,
   createInvestigationJob,
   createOAuthIntent,
   getStoredServiceToken,
@@ -36,9 +34,9 @@ const env = {
 } as NodeJS.ProcessEnv;
 
 const spec = dynamicServiceSpecSchema.parse({
-  id: "acme-records",
-  label: "Acme Records",
-  aliases: ["acme records"],
+  id: "records-service",
+  label: "Records Service",
+  aliases: ["records service"],
   domain: "workspace records, changes, and review history",
   homepage: "https://records.example.test",
   apiHosts: ["records.example.test"],
@@ -53,9 +51,9 @@ const spec = dynamicServiceSpecSchema.parse({
 });
 
 const patternSpec = dynamicServiceSpecSchema.parse({
-  id: "acme-chat",
-  label: "Acme Chat",
-  aliases: ["acme chat"],
+  id: "chat-service",
+  label: "Chat Service",
+  aliases: ["chat service"],
   domain: "chat guilds, memberships, and message history",
   homepage: "https://chat.example.test",
   apiHosts: ["chat.example.test"],
@@ -84,7 +82,7 @@ describe("workspace transactional state", () => {
     expect(getWorkspaceClientCredentials("T1", spec.id, env)?.clientSecret).toBe("super-secret");
     expect(getWorkspaceClientCredentials("T-ISOLATED-OTHER", spec.id, env)).toBeUndefined();
     expect(readFileSync(databasePath).includes(Buffer.from("super-secret"))).toBe(false);
-    const provisioned = { ...env, ACME_RECORDS_CLIENT_ID: "env-client", ACME_RECORDS_CLIENT_SECRET: "env-secret" } as NodeJS.ProcessEnv;
+    const provisioned = { ...env, RECORDS_SERVICE_CLIENT_ID: "env-client", RECORDS_SERVICE_CLIENT_SECRET: "env-secret" } as NodeJS.ProcessEnv;
     expect(getWorkspaceClientCredentials("T1", spec.id, provisioned)).toMatchObject({
       clientId: "env-client",
       clientSecret: "env-secret",
@@ -113,19 +111,15 @@ describe("workspace transactional state", () => {
 
   it("persists capacity waits for restart recovery", () => {
     const context = investigationContext({ requestId: "Ev-capacity", workspaceId: "T1", channelId: "C2", threadTs: "2.1", userId: "U2" });
-    const job = createInvestigationJob(context, "question");
+    const job = createInvestigationJob(context, "question", {
+      relevantSources: ["records-service"],
+      relevantOwnerUserIds: ["U2"]
+    });
     updateInvestigationJob(job.id, "waiting_for_capacity", { retryAt: new Date(Date.now() - 1_000).toISOString() });
-    expect(listDueCapacityJobs().map((value) => value.id)).toContain(job.id);
+    const restored = listDueCapacityJobs().find((value) => value.id === job.id);
+    expect(restored).toMatchObject({ relevantSources: ["records-service"], relevantOwnerUserIds: ["U2"] });
   });
 
-  it("binds actions to one workspace thread and consumes them once", () => {
-    const context = investigationContext({ requestId: "Ev-action", workspaceId: "T1", channelId: "C3", threadTs: "3.1", userId: "U1" });
-    const job = createInvestigationJob(context, "question");
-    const id = createActionIntent({ jobId: job.id, workspaceId: "T1", channelId: "C3", threadTs: "3.1", kind: "followup", payload: { action: "next" } });
-    expect(consumeActionIntent(id, { workspaceId: "T1", channelId: "OTHER", threadTs: "3.1", kind: "followup" })).toBeUndefined();
-    expect(consumeActionIntent(id, { workspaceId: "T1", channelId: "C3", threadTs: "3.1", kind: "followup" })?.payload).toEqual({ action: "next" });
-    expect(consumeActionIntent(id, { workspaceId: "T1", channelId: "C3", threadTs: "3.1", kind: "followup" })).toBeUndefined();
-  });
 });
 
 describe("workspace administrator setup", () => {
@@ -161,7 +155,7 @@ describe("workspace administrator setup", () => {
     expect(form.status).toBe(200);
     expect(form.text).toContain('pattern="\\d{17,20}"');
     expect(form.text).toContain("17-20 digit numeric application ID");
-    expect(form.text).toContain('<a href="https://agent.example.test/auth/services/acme-chat/callback"');
+    expect(form.text).toContain('<a href="https://agent.example.test/auth/services/chat-service/callback"');
     expect(form.text).toContain(">Copy</button>");
     const rejected = await request(app)
       .post(`/auth/service-setup/${secret}`)
@@ -218,7 +212,7 @@ describe("workspace administrator setup", () => {
 
   it("rejects credentials the provider preflight disowns and keeps the link retryable", async () => {
     const app = express();
-    let verdict: { problem: string; overridable: boolean } | null = { problem: "Acme Records did not recognize this client ID.", overridable: false };
+    let verdict: { problem: string; overridable: boolean } | null = { problem: "Records Service did not recognize this client ID.", overridable: false };
     registerServiceSetupRoutes(app, env, async () => true, async () => verdict);
     const secret = createServiceSetupIntent(spec.id, "T6", "UADMIN");
     const rejected = await request(app)

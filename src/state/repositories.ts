@@ -262,19 +262,30 @@ export function getOAuthIntent(nonce: string, kind: OAuthIntent["kind"]): OAuthI
   } : undefined;
 }
 
-export function createInvestigationJob(context: InvestigationContext, question: string): InvestigationJob {
+export function createInvestigationJob(
+  context: InvestigationContext,
+  question: string,
+  routing: { relevantSources?: string[]; relevantOwnerUserIds?: string[] } = {}
+): InvestigationJob {
   const now = new Date().toISOString();
   const job: InvestigationJob = {
-    id: randomUUID(), context, question, status: "queued", createdAt: now, updatedAt: now,
+    id: randomUUID(), context, question,
+    relevantSources: routing.relevantSources,
+    relevantOwnerUserIds: routing.relevantOwnerUserIds,
+    status: "queued", createdAt: now, updatedAt: now,
     expiresAt: new Date(Date.now() + 60 * 60_000).toISOString()
   };
   stateDatabase().prepare(`
     INSERT OR IGNORE INTO investigation_jobs
-      (id, request_id, workspace_id, channel_id, thread_ts, user_id, question, status, created_at, updated_at, expires_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (id, request_id, workspace_id, channel_id, thread_ts, user_id, question,
+       relevant_sources_json, relevant_owner_user_ids_json, status, created_at, updated_at, expires_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     job.id, context.requestId, context.workspaceId, context.channelId, context.threadTs,
-    context.userId, question, job.status, now, now, job.expiresAt
+    context.userId, question,
+    routing.relevantSources === undefined ? null : JSON.stringify(routing.relevantSources),
+    routing.relevantOwnerUserIds === undefined ? null : JSON.stringify(routing.relevantOwnerUserIds),
+    job.status, now, now, job.expiresAt
   );
   return getInvestigationJobByRequestId(context.requestId) ?? job;
 }
@@ -326,62 +337,6 @@ export function markEventProcessed(eventId: string): boolean {
     INSERT OR IGNORE INTO processed_events (event_id, processed_at) VALUES (?, ?)
   `).run(eventId, new Date().toISOString());
   return result.changes === 1;
-}
-
-export interface StoredActionIntent {
-  id: string;
-  jobId: string;
-  workspaceId: string;
-  channelId: string;
-  threadTs: string;
-  messageTs?: string;
-  kind: string;
-  payload: Record<string, unknown>;
-  expiresAt: string;
-}
-
-export function createActionIntent(value: Omit<StoredActionIntent, "id" | "expiresAt"> & { ttlMs?: number }): string {
-  const id = randomUUID();
-  const expiresAt = new Date(Date.now() + (value.ttlMs ?? 15 * 60_000)).toISOString();
-  stateDatabase().prepare(`
-    INSERT INTO action_intents
-      (id, job_id, workspace_id, channel_id, thread_ts, message_ts, kind, payload_json, expires_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(id, value.jobId, value.workspaceId, value.channelId, value.threadTs, value.messageTs ?? null, value.kind, JSON.stringify(value.payload), expiresAt);
-  return id;
-}
-
-export function consumeActionIntent(
-  id: string,
-  expected: { workspaceId: string; channelId: string; threadTs: string; messageTs?: string; kind: string }
-): StoredActionIntent | undefined {
-  const db = stateDatabase();
-  return db.transaction(() => {
-    const row = db.prepare(`
-      SELECT * FROM action_intents WHERE id = ? AND consumed_at IS NULL AND expires_at > ?
-    `).get(id, new Date().toISOString()) as Record<string, unknown> | undefined;
-    if (!row || row.workspace_id !== expected.workspaceId || row.channel_id !== expected.channelId ||
-        row.thread_ts !== expected.threadTs || row.kind !== expected.kind ||
-        (row.message_ts && row.message_ts !== expected.messageTs)) return undefined;
-    db.prepare("UPDATE action_intents SET consumed_at = ? WHERE id = ?").run(new Date().toISOString(), id);
-    return {
-      id,
-      jobId: String(row.job_id), workspaceId: String(row.workspace_id), channelId: String(row.channel_id),
-      threadTs: String(row.thread_ts), messageTs: row.message_ts ? String(row.message_ts) : undefined,
-      kind: String(row.kind), payload: JSON.parse(String(row.payload_json)), expiresAt: String(row.expires_at)
-    } satisfies StoredActionIntent;
-  })();
-}
-
-export function bindActionIntentMessage(id: string, messageTs: string): void {
-  stateDatabase().prepare("UPDATE action_intents SET message_ts = ? WHERE id = ? AND consumed_at IS NULL")
-    .run(messageTs, id);
-}
-
-export function getInvestigationJobResult(id: string): unknown | undefined {
-  const row = stateDatabase().prepare("SELECT result_json FROM investigation_jobs WHERE id = ?")
-    .get(id) as { result_json?: string } | undefined;
-  return row?.result_json ? JSON.parse(row.result_json) : undefined;
 }
 
 export function saveSlackInstallation(
@@ -444,6 +399,8 @@ function jobFromRow(row: Record<string, unknown>): InvestigationJob {
       channelId: String(row.channel_id), threadTs: String(row.thread_ts), userId: String(row.user_id)
     },
     question: String(row.question),
+    relevantSources: row.relevant_sources_json ? JSON.parse(String(row.relevant_sources_json)) as string[] : undefined,
+    relevantOwnerUserIds: row.relevant_owner_user_ids_json ? JSON.parse(String(row.relevant_owner_user_ids_json)) as string[] : undefined,
     status: String(row.status) as InvestigationJobStatus,
     retryAt: row.retry_at ? String(row.retry_at) : undefined,
     waitingConnectionId: row.waiting_connection_id ? String(row.waiting_connection_id) : undefined,

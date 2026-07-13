@@ -100,7 +100,7 @@ export const clientCredentialPreflight: CredentialPreflight = async (
       }
     }
     // A token endpoint that answers a fully-formed authentication attempt with a JSON 404 is
-    // refusing to acknowledge the client (GitHub's convention for unknown client ids — valid
+    // refusing to acknowledge the client (a common convention for unknown client ids — valid
     // clients get an error body, never 404). Strong signal, but not an RFC guarantee, so the
     // admin may override it after double-checking.
     if (response.status === 404) {

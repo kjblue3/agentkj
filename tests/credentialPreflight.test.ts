@@ -7,9 +7,9 @@ import { clientCredentialPreflight } from "../src/auth/credentialPreflight.js";
 import { dynamicServiceSpecSchema } from "../src/services/dynamicSpec.js";
 
 const spec = dynamicServiceSpecSchema.parse({
-  id: "acme-chat-probe",
-  label: "Acme Chat",
-  aliases: ["acme chat probe"],
+  id: "runtime-chat-probe",
+  label: "Runtime Chat",
+  aliases: ["runtime chat probe"],
   domain: "chat guilds, memberships, and message history",
   homepage: "https://chat.example.test",
   apiHosts: ["chat.example.test"],
@@ -24,7 +24,7 @@ const spec = dynamicServiceSpecSchema.parse({
 });
 
 const mockedFetch = vi.mocked(safeFetch);
-const callback = "https://agent.example.test/auth/services/acme-chat-probe/callback";
+const callback = "https://agent.example.test/auth/services/runtime-chat-probe/callback";
 
 function respond(status: number, body: string): Response {
   return new Response(body, { status });
@@ -71,7 +71,7 @@ describe("client credential preflight", () => {
     expect(String(tokenInit?.body)).toContain("grant_type=client_credentials");
   });
 
-  it("flags GitHub-style JSON 404s from the token endpoint as an overridable unknown-client signal", async () => {
+  it("flags opaque JSON 404s from the token endpoint as an overridable unknown-client signal", async () => {
     mockedFetch.mockResolvedValueOnce(respond(200, "<html>login page</html>"));
     mockedFetch.mockResolvedValueOnce(respond(404, '{"error": "Not Found"}'));
     const verdict = await clientCredentialPreflight(spec, "Ov23wrongwrongwrong1", "secret-value", callback, spec.label);

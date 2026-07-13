@@ -1,5 +1,4 @@
 import { App } from "@slack/bolt";
-import type { Block, KnownBlock } from "@slack/types";
 import type OpenAI from "openai";
 import type { InvestigationPipeline } from "../investigation/pipeline.js";
 import type { InvestigationContext, ConnectionDescriptor } from "../core/context.js";
@@ -21,12 +20,8 @@ import { getValidServiceToken, serviceConnectUrl } from "../auth/serviceOAuth.js
 import { createMcpLoginLink } from "../auth/mcpOAuthRoutes.js";
 import { isWorkspaceAdministrator, listWorkspaceAdministrators } from "../auth/workspaceAdmin.js";
 import {
-  consumeActionIntent,
-  bindActionIntentMessage,
-  createActionIntent,
   createInvestigationJob,
   getInvestigationJob,
-  getInvestigationJobResult,
   getStoredServiceToken,
   listDueCapacityJobs,
   listExpiredCapacityJobs,
@@ -38,19 +33,18 @@ import {
   getSlackInstallationToken,
   updateInvestigationJob
 } from "../state/repositories.js";
-import type { InvestigationResult } from "../types/schemas.js";
-import { investigationResultSchema } from "../types/schemas.js";
-import { classifyIntent, heuristicIntent, type SlackIntent } from "./intentRouter.js";
+import { classifyIntent, heuristicIntent, ownerScopeForText, type SlackIntent } from "./intentRouter.js";
 import { buildReportBlocks } from "./blocks.js";
 import { SlackToolProvider } from "./toolProvider.js";
 import {
   approveRemoteConnector,
   AuthorizedConnectionToolProvider,
   createCredentialIntent,
-  inspectRemoteConnector
+  inspectRemoteConnector,
+  listConnectionsForOwner,
+  selectAuthorizedConnections
 } from "../mcp/connections.js";
 
-type SlackBlock = Block | KnownBlock;
 type SlackReply = (message: Record<string, unknown> | string) => Promise<unknown>;
 const threadQueues = new Map<string, Promise<void>>();
 let activeInvestigations = 0;
@@ -62,7 +56,19 @@ function classifier(): OpenAI | null {
   return classifierMemo;
 }
 
-function stripMention(text: string): string { return text.replace(/<@[A-Z0-9]+>/gi, "").trim(); }
+export function stripAgentMention(text: string, agentUserId?: string): string {
+  if (!agentUserId) return text.replace(/<@[A-Z0-9]+>/i, "").trim();
+  return text.replace(new RegExp(`<@${agentUserId.replace(/[^A-Z0-9]/gi, "")}>`, "i"), "").trim();
+}
+export function isDirectPromptMessage(message: {
+  channel_type?: string;
+  user?: string;
+  text?: string;
+  subtype?: string;
+  bot_id?: string;
+}): boolean {
+  return message.channel_type === "im" && Boolean(message.user && message.text?.trim()) && !message.subtype && !message.bot_id;
+}
 function threadKey(context: InvestigationContext): string { return `${context.workspaceId}:${context.channelId}:${context.threadTs}`; }
 function investigationLimit(): number {
   const configured = Number(process.env.MAX_CONCURRENT_INVESTIGATIONS);
@@ -90,18 +96,19 @@ async function withInvestigationSlot(operation: () => Promise<void>): Promise<vo
   }
 }
 
-async function connectionDescriptors(workspaceId: string, excluded = new Set<string>()): Promise<{
-  descriptors: ConnectionDescriptor[];
-  providers: Array<{ serviceId: string; provider: ReturnType<ServiceDefinition["createToolProvider"]> }>;
-}> {
-  const descriptors: ConnectionDescriptor[] = [];
-  const providers: Array<{ serviceId: string; provider: ReturnType<ServiceDefinition["createToolProvider"]> }> = [];
-  for (const record of listWorkspaceTokens(workspaceId)) {
+export function connectionCatalog(
+  workspaceId: string,
+  ownerUserIds?: string[],
+  excluded = new Set<string>()
+): ConnectionDescriptor[] {
+  const selectedOwners = ownerUserIds ? new Set(ownerUserIds) : undefined;
+  return listWorkspaceTokens(workspaceId).flatMap((record) => {
+    if (selectedOwners && !selectedOwners.has(record.userId)) return [];
     const service = findService(record.serviceId);
-    if (!service) continue;
+    if (!service) return [];
     const connectionId = `${service.id}:${record.userId}`;
-    if (excluded.has(connectionId)) continue;
-    descriptors.push({
+    if (excluded.has(connectionId)) return [];
+    return [{
       id: connectionId,
       workspaceId,
       ownerUserId: record.userId,
@@ -111,11 +118,23 @@ async function connectionDescriptors(workspaceId: string, excluded = new Set<str
       scopes: record.token.scopes,
       health: record.token.health,
       connectedAt: record.token.connectedAt
-    });
-    const token = await getValidServiceToken(service, workspaceId, record.userId);
+    } satisfies ConnectionDescriptor];
+  });
+}
+
+async function connectionResources(workspaceId: string, ownerUserIds?: string[], excluded = new Set<string>()): Promise<{
+  descriptors: ConnectionDescriptor[];
+  providers: Array<{ serviceId: string; provider: ReturnType<ServiceDefinition["createToolProvider"]> }>;
+}> {
+  const descriptors = connectionCatalog(workspaceId, ownerUserIds, excluded);
+  const providers: Array<{ serviceId: string; provider: ReturnType<ServiceDefinition["createToolProvider"]> }> = [];
+  for (const descriptor of descriptors) {
+    const service = findService(descriptor.serviceId);
+    if (!service) continue;
+    const token = await getValidServiceToken(service, workspaceId, descriptor.ownerUserId);
     if (token) providers.push({
       serviceId: service.id,
-      provider: service.createToolProvider(token, connectionId, record.userId)
+      provider: service.createToolProvider(token, descriptor.id, descriptor.ownerUserId)
     });
   }
   return { descriptors, providers };
@@ -147,7 +166,7 @@ async function privateConnectMessage(
   if (existing) {
     return `Your *${service.label}* connection needs a fresh login. <${url}|Re-authorize here> and we’re back in business — same read-only access as before.`;
   }
-  return `Hey — you’re not connected with *${service.label}* yet! <${url}|Connect your account?> Watch out though: while it’s read-only, other members of this workspace can use it in their investigations, it can be combined with teammates’ connections, and findings backed by its data get posted in public threads.`;
+  return `Hey — you’re not connected with *${service.label}* yet! <${url}|Connect your account?> Watch out though: while it’s read-only, other members of this workspace can use it in eligible investigations, it can be combined with teammates’ connections, and findings are posted in the originating conversation (which may be a public channel).`;
 }
 
 export async function handleSlackIntent(args: {
@@ -161,13 +180,18 @@ export async function handleSlackIntent(args: {
   privateNotify?: (userId: string, message: string) => Promise<unknown>;
 }): Promise<void> {
   const { text, context, pipeline, privateReply, publicReply, updatePublicStatus, conversationContext, privateNotify } = args;
-  const available = await connectionDescriptors(context.workspaceId);
+  const catalog = connectionCatalog(context.workspaceId);
   let intent: SlackIntent;
   try {
     intent = await classifyIntent(
       text,
       {
-        connected: ["slack", ...new Set(available.descriptors.map((item) => item.serviceId))],
+        requestingUserId: context.userId,
+        connections: catalog.map((item) => ({
+          serviceId: item.serviceId,
+          ownerUserId: item.ownerUserId,
+          domain: item.domain
+        })),
         connectableSummary: describeServices(context.workspaceId)
       },
       classifier(),
@@ -178,7 +202,12 @@ export async function handleSlackIntent(args: {
     if (!(error instanceof LlmCapacityExhausted)) throw error;
     intent = heuristicIntent(text);
     if (intent.kind === "investigate") {
-      const job = createInvestigationJob(context, text);
+      const relevantOwnerUserIds = ownerScopeForText(
+        text,
+        context.userId,
+        catalog.map((connection) => connection.ownerUserId)
+      );
+      const job = createInvestigationJob(context, text, { relevantOwnerUserIds });
       updateInvestigationJob(job.id, "waiting_for_capacity", { retryAt: error.retryAt.toISOString() });
       const posted = await publicReply(`All my language-model keys are cooling down from rate limits right now. I saved your request and I’ll pick it back up automatically after ${error.retryAt.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}.`);
       const statusMessageTs = posted && typeof posted === "object" && "ts" in posted ? String((posted as { ts: unknown }).ts) : undefined;
@@ -189,25 +218,30 @@ export async function handleSlackIntent(args: {
   }
 
   if (intent.kind === "connect") {
-    for (const target of intent.targets) await handleConnect(target, context, privateReply);
+    await privateReply(`Connection setup now starts only through the private slash command. Use \`/connect ${intent.targets.join(" and ")}\`.`);
     return;
   }
   if (intent.kind === "list_connectors") {
-    const lines = available.descriptors.length > 0
-      ? available.descriptors.map((item) => `• *${item.serviceLabel}* via <@${item.ownerUserId}> — ${item.health}`).join("\n")
-      : "Nobody’s connected anything yet — you could be first! Just say `connect <service>`.";
-    await privateReply(`${intent.acknowledgement ? `${intent.acknowledgement}\n\n` : ""}*Here’s what’s hooked up right now:*\n${lines}\n\n*Services you can connect:*\n${describeServices(context.workspaceId)}`);
+    const personal = catalog.filter((item) => item.ownerUserId === context.userId);
+    const remote = listConnectionsForOwner(context.userId)
+      .filter((connection) => connection.workspaceId === context.workspaceId && connection.active)
+      .map((connection) => `• *${connection.name}* — ${connection.approved ? "ready" : "awaiting approval"}`);
+    const lines = [
+      ...personal.map((item) => `• *${item.serviceLabel}* — ${item.health}`),
+      ...remote
+    ];
+    await privateReply(`*Your connections:*\n${lines.length > 0 ? lines.join("\n") : "You haven’t connected a source yet. Use `/connect <service>` to start privately."}\n\n*Services available to connect:*\n${describeServices(context.workspaceId)}`);
     return;
   }
   if (intent.kind === "help") {
-    await publicReply(intent.acknowledgement ?? "Hey! Ask me anything in a thread and I’ll investigate it across the workspace’s connected sources. Want me to use one of your accounts? Just say `connect <service>` — setup and account details always stay private.");
+    await publicReply("I can search authorized read-only sources and return an evidence-backed answer in this thread. I can’t edit external data, run deployments, send messages elsewhere, or perform autonomous work. Use `/connect <service>` for private connection setup.");
     return;
   }
-  if (intent.kind === "approve" || intent.kind === "share") {
-    if (intent.kind === "share") {
-      await privateReply("Good news — connections authorized through this workspace are already shared read-only with workspace investigations. Nothing more to do!");
-      return;
-    }
+  if (intent.kind === "unsupported_action") {
+    await publicReply("I can investigate and report from authorized read-only sources, but I can’t modify code or external data, run or stop processes, deploy, merge, send, or schedule work. I haven’t started any external action from this request.");
+    return;
+  }
+  if (intent.kind === "approve") {
     const [, pendingId, credential = "none"] = text.trim().split(/\s+/);
     try {
       const connection = approveRemoteConnector(pendingId ?? "", context.userId, {
@@ -235,9 +269,17 @@ export async function handleSlackIntent(args: {
     return;
   }
 
-  const job = createInvestigationJob(context, text);
+  const relevantOwnerUserIds = intent.relevantOwnerUserIds ?? ownerScopeForText(
+    text,
+    context.userId,
+    catalog.map((connection) => connection.ownerUserId)
+  );
+  const job = createInvestigationJob(context, text, {
+    relevantSources: intent.relevantSources,
+    relevantOwnerUserIds
+  });
   if (threadQueues.has(threadKey(context)) || activeInvestigations >= investigationLimit()) {
-    await publicReply("I’m on it! Just wrapping up other work for this workspace first — your question is queued and will start automatically right here in this thread.");
+    await publicReply("Your question is queued behind other investigations and will start automatically in this conversation.");
   }
   await enqueueThread(context, () => runInvestigation({
     jobId: job.id,
@@ -246,7 +288,8 @@ export async function handleSlackIntent(args: {
     pipeline,
     publicReply,
     conversationContext,
-    acknowledgement: intent.acknowledgement,
+    relevantSources: intent.relevantSources,
+    relevantOwnerUserIds,
     privateNotify,
     updatePublicStatus
   }));
@@ -286,6 +329,15 @@ async function handleConnect(target: string, context: InvestigationContext, priv
   await privateReply(await privateConnectMessage(service, context));
 }
 
+export function localizedProviders<T extends { serviceId: string }>(
+  providers: T[],
+  relevantSources: string[] | undefined
+): T[] {
+  if (relevantSources === undefined) return providers;
+  const selected = new Set(relevantSources);
+  return providers.filter((item) => selected.has(item.serviceId));
+}
+
 export function connectCommandTargets(text: string): string[] {
   const intent = heuristicIntent(`connect ${text.trim()}`);
   return intent.kind === "connect" ? intent.targets : [];
@@ -299,7 +351,7 @@ export async function handleConnectCommand(args: {
   const targets = connectCommandTargets(args.text);
   if (targets.length === 0) {
     await args.privateReply(
-      `Use \`/connect <service name or MCP URL>\` — you can list several separated by commas or \`and\`.\n\n` +
+      `Use \`/connect <service name>\` or \`/connect <HTTPS MCP URL>\`. Multiple targets can be separated with commas or \`and\`.\n\n` +
       `*Services available to connect:*\n${describeServices(args.context.workspaceId)}`
     );
     return;
@@ -314,15 +366,17 @@ export async function runInvestigation(args: {
   pipeline: InvestigationPipeline;
   publicReply: SlackReply;
   conversationContext?: string;
-  acknowledgement?: string;
+  relevantSources?: string[];
+  relevantOwnerUserIds?: string[];
   privateNotify?: (userId: string, message: string) => Promise<unknown>;
   excludedConnectionIds?: Set<string>;
   updatePublicStatus?: (messageTs: string, text: string) => Promise<unknown>;
 }): Promise<void> {
   const { jobId, question, context, pipeline, publicReply, conversationContext, privateNotify } = args;
   const previousJob = getInvestigationJob(jobId);
+  const relevantSources = args.relevantSources ?? previousJob?.relevantSources;
   updateInvestigationJob(jobId, "running");
-  const ackText = args.acknowledgement ?? "On it — tracing this through the workspace’s connected sources now.";
+  const ackText = "Checking the authorized read-only sources available for this request.";
   let statusTs = previousJob?.statusMessageTs;
   if (statusTs && args.updatePublicStatus) {
     await args.updatePublicStatus(statusTs, "We’re back! Capacity freed up, so I’ve resumed this investigation.");
@@ -344,20 +398,26 @@ export async function runInvestigation(args: {
     heartbeat.unref?.();
   }
   try {
-    const available = await connectionDescriptors(context.workspaceId, args.excludedConnectionIds);
+    const knownOwners = connectionCatalog(context.workspaceId).map((connection) => connection.ownerUserId);
+    const ownerUserIds = args.relevantOwnerUserIds ?? previousJob?.relevantOwnerUserIds ?? ownerScopeForText(question, context.userId, knownOwners);
+    const available = await connectionResources(context.workspaceId, ownerUserIds, args.excludedConnectionIds);
     const installation = getSlackInstallationToken(context.workspaceId);
     const workspaceChatProvider = installation
       ? new SlackToolProvider(installation.botToken, installation.userToken)
       : undefined;
-    // Every authorized connection is always in scope: the agent sweeps all sources and reports
-    // what each one showed, instead of a classifier pre-guessing where the answer lives.
-    const serviceProviders = available.providers.map(({ provider }) => provider);
-    const includeWorkspaceChat = Boolean(workspaceChatProvider);
-    const remoteProvider = new AuthorizedConnectionToolProvider({
+    const serviceProviders = localizedProviders(available.providers, relevantSources)
+      .map(({ provider }) => provider);
+    const includeWorkspaceChat = Boolean(
+      workspaceChatProvider && (relevantSources === undefined || relevantSources.includes("slack"))
+    );
+    const remoteContext = {
       userId: context.userId,
       workspaceId: context.workspaceId,
-      channelId: context.channelId
-    });
+      channelId: context.channelId,
+      ownerUserIds
+    };
+    const remoteConnections = selectAuthorizedConnections(remoteContext);
+    const remoteProvider = new AuthorizedConnectionToolProvider(remoteContext, remoteConnections);
     const publicUrl = extractPublicUrl(question);
     const report = await pipeline.investigate(question, {
       context,
@@ -368,29 +428,27 @@ export async function runInvestigation(args: {
         ...(publicUrl ? [new PublicWebToolProvider(publicUrl)] : [])
       ],
       connectionDescriptors: available.descriptors,
+      relevantSources,
       connectableServices: allServices().filter((service) =>
         !available.descriptors.some((connection) => connection.serviceId === service.id)
       ).map((service) => service.id),
       conversationContext
     });
     updateInvestigationJob(jobId, "completed", { result: report });
-    const actionId = createActionIntent({
-      jobId,
-      workspaceId: context.workspaceId,
-      channelId: context.channelId,
-      threadTs: context.threadTs,
-      kind: "followup",
-      payload: {}
-    });
-    const owners = [...new Set(available.descriptors
-      .filter((connection) => report.evidence.some((item) => item.id.startsWith(connection.id)))
-      .map((connection) => `<@${connection.ownerUserId}>`))];
+    const owners = [...new Set([
+      ...available.descriptors
+        .filter((connection) => report.evidence.some((item) => item.id.startsWith(connection.id)))
+        .map((connection) => connection.ownerUserId),
+      ...remoteConnections
+        .filter((connection) => report.evidence.some((item) => item.id.startsWith(`remote:${connection.id}:`)))
+        .map((connection) => connection.ownerSlackUserId)
+    ].map((ownerUserId) => `<@${ownerUserId}>`))];
     const attribution = owners.length > 0 ? `\n_Connections used: ${owners.join(", ")}._` : "";
-    const posted = await publicReply({ text: `${report.shortAnswer}${attribution}`, blocks: buildReportBlocks(report, actionId) });
-    const postedTs = posted && typeof posted === "object" && "ts" in posted ? String((posted as { ts: unknown }).ts) : undefined;
-    if (postedTs) bindActionIntentMessage(actionId, postedTs);
+    await publicReply({ text: `${report.shortAnswer}${attribution}`, blocks: buildReportBlocks(report, attribution) });
     if (heartbeat) clearInterval(heartbeat);
-    if (statusTs && args.updatePublicStatus) await args.updatePublicStatus(statusTs, ackText).catch(() => undefined);
+    if (statusTs && args.updatePublicStatus) {
+      await args.updatePublicStatus(statusTs, "Investigation complete — the cited answer is below.").catch(() => undefined);
+    }
   } catch (error) {
     if (error instanceof ConnectionAccessError && error.connectionId && error.ownerUserId) {
       updateInvestigationJob(jobId, "waiting_for_authorization", { waitingConnectionId: error.connectionId });
@@ -515,17 +573,35 @@ export function createSlackApp(pipeline: InvestigationPipeline): App | null {
     }
   });
 
-  app.event("app_mention", async ({ event, client, body }) => {
-    if (!("user" in event) || typeof event.user !== "string") return;
-    if (!event.team) return;
+  type IncomingMessage = {
+    user: string;
+    team?: string;
+    channel: string;
+    channel_type?: string;
+    ts: string;
+    thread_ts?: string;
+    text: string;
+    subtype?: string;
+    bot_id?: string;
+  };
+
+  const processIncomingMessage = async (
+    event: IncomingMessage,
+    client: App["client"],
+    body: Record<string, unknown>,
+    directMessage: boolean,
+    agentUserId?: string
+  ): Promise<void> => {
+    const workspaceId = event.team ?? (typeof body.team_id === "string" ? body.team_id : undefined);
+    if (!workspaceId) return;
     const eventId = typeof (body as { event_id?: unknown }).event_id === "string"
       ? String((body as { event_id: string }).event_id)
-      : `${event.team}:${event.channel}:${event.ts}`;
+      : `${workspaceId}:${event.channel}:${event.ts}`;
     if (!markEventProcessed(eventId)) return;
     const threadTs = event.thread_ts ?? event.ts;
     const context = investigationContext({
       requestId: eventId,
-      workspaceId: event.team,
+      workspaceId,
       channelId: event.channel,
       threadTs,
       userId: event.user
@@ -534,11 +610,13 @@ export function createSlackApp(pipeline: InvestigationPipeline): App | null {
     try {
       const replies = await client.conversations.replies({ channel: event.channel, ts: threadTs, limit: 20 });
       transcript = replies.messages?.filter((message) => message.ts !== event.ts && message.text)
-        .slice(-15).map((message) => `${message.bot_id ? "assistant" : "member"}: ${message.text}`).join("\n");
+        .slice(-15).map((message) => `${message.bot_id ? "assistant" : message.user ? `<@${message.user}>` : "member"}: ${message.text}`).join("\n");
     } catch { transcript = undefined; }
     const privateReply: SlackReply = (message) => {
       const payload = typeof message === "string" ? { text: message } : message;
-      return client.chat.postEphemeral({ channel: event.channel, user: event.user, ...payload } as never);
+      return directMessage
+        ? client.chat.postMessage({ channel: event.channel, thread_ts: threadTs, ...payload } as never)
+        : client.chat.postEphemeral({ channel: event.channel, user: event.user, ...payload } as never);
     };
     const privateNotify = async (targetUserId: string, message: string): Promise<unknown> => {
       try {
@@ -559,50 +637,33 @@ export function createSlackApp(pipeline: InvestigationPipeline): App | null {
       text
     });
     await handleSlackIntent({
-      text: stripMention(event.text), context, pipeline, privateReply, publicReply, updatePublicStatus, privateNotify, conversationContext: transcript
-    });
-  });
-
-  app.action("followup_do", async ({ ack, action, body, client }) => {
-    await ack();
-    const raw = body as unknown as Record<string, unknown>;
-    const workspaceId = String((raw.team as { id?: string } | undefined)?.id ?? "");
-    const channelId = String((raw.channel as { id?: string } | undefined)?.id ?? (raw.container as { channel_id?: string } | undefined)?.channel_id ?? "");
-    const threadTs = String((raw.message as { thread_ts?: string; ts?: string } | undefined)?.thread_ts ?? (raw.message as { ts?: string } | undefined)?.ts ?? "");
-    const messageTs = String((raw.message as { ts?: string } | undefined)?.ts ?? "");
-    const actionId = "value" in action ? String(action.value) : "";
-    const intent = consumeActionIntent(actionId, { workspaceId, channelId, threadTs, messageTs, kind: "followup" });
-    const original = intent ? investigationResultSchema.safeParse(getInvestigationJobResult(intent.jobId)) : undefined;
-    const userId = String((raw.user as { id?: string } | undefined)?.id ?? "");
-    const followup = original?.success ? original.data.recommendedActions.find(Boolean) : undefined;
-    if (!intent || !original?.success || !followup || !userId) return;
-    const context = investigationContext({ workspaceId, channelId, threadTs, userId });
-    const job = createInvestigationJob(context, followup);
-    await enqueueThread(context, () => runInvestigation({
-      jobId: job.id,
-      question: followup,
+      text: directMessage ? event.text.trim() : stripAgentMention(event.text, agentUserId),
       context,
       pipeline,
-      publicReply: (message) => {
-        const payload = typeof message === "string" ? { text: message } : message;
-        return client.chat.postMessage({ channel: channelId, thread_ts: threadTs, ...payload } as never);
-      },
-      conversationContext: `Earlier question: ${original.data.question}\nEarlier answer: ${original.data.shortAnswer}`
-    }));
+      privateReply,
+      publicReply,
+      updatePublicStatus,
+      privateNotify,
+      conversationContext: transcript
+    });
+  };
+
+  app.event("app_mention", async ({ event, client, body }) => {
+    if (!("user" in event) || typeof event.user !== "string" || typeof event.text !== "string") return;
+    const rawBody = body as unknown as { authorizations?: Array<{ user_id?: string }> };
+    await processIncomingMessage(
+      event as IncomingMessage,
+      client,
+      body as unknown as Record<string, unknown>,
+      false,
+      rawBody.authorizations?.[0]?.user_id
+    );
   });
 
-  app.action("followup_skip", async ({ ack, action, body, client }) => {
-    await ack();
-    const raw = body as unknown as Record<string, unknown>;
-    const workspaceId = String((raw.team as { id?: string } | undefined)?.id ?? "");
-    const channelId = String((raw.channel as { id?: string } | undefined)?.id ?? (raw.container as { channel_id?: string } | undefined)?.channel_id ?? "");
-    const threadTs = String((raw.message as { thread_ts?: string; ts?: string } | undefined)?.thread_ts ?? (raw.message as { ts?: string } | undefined)?.ts ?? "");
-    const messageTs = String((raw.message as { ts?: string } | undefined)?.ts ?? "");
-    const actionId = "value" in action ? String(action.value) : "";
-    const intent = consumeActionIntent(actionId, { workspaceId, channelId, threadTs, messageTs, kind: "followup" });
-    if (intent) {
-      await client.chat.postMessage({ channel: channelId, thread_ts: threadTs, text: "Okay — I’ll leave that follow-up alone." });
-    }
+  app.event("message", async ({ event, client, body }) => {
+    const message = event as IncomingMessage;
+    if (!isDirectPromptMessage(message)) return;
+    await processIncomingMessage(message, client, body as unknown as Record<string, unknown>, true);
   });
 
   setInterval(() => {

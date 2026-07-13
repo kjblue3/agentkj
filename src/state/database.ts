@@ -78,6 +78,8 @@ function migrate(db: Database.Database): void {
       thread_ts TEXT NOT NULL,
       user_id TEXT NOT NULL,
       question TEXT NOT NULL,
+      relevant_sources_json TEXT,
+      relevant_owner_user_ids_json TEXT,
       status TEXT NOT NULL,
       retry_at TEXT,
       waiting_connection_id TEXT,
@@ -89,18 +91,6 @@ function migrate(db: Database.Database): void {
     );
     CREATE INDEX IF NOT EXISTS jobs_thread_status
       ON investigation_jobs(workspace_id, channel_id, thread_ts, status);
-    CREATE TABLE IF NOT EXISTS action_intents (
-      id TEXT PRIMARY KEY,
-      job_id TEXT NOT NULL REFERENCES investigation_jobs(id) ON DELETE CASCADE,
-      workspace_id TEXT NOT NULL,
-      channel_id TEXT NOT NULL,
-      thread_ts TEXT NOT NULL,
-      message_ts TEXT,
-      kind TEXT NOT NULL,
-      payload_json TEXT NOT NULL,
-      expires_at TEXT NOT NULL,
-      consumed_at TEXT
-    );
     CREATE TABLE IF NOT EXISTS processed_events (
       event_id TEXT PRIMARY KEY,
       processed_at TEXT NOT NULL
@@ -151,6 +141,13 @@ function migrate(db: Database.Database): void {
       consumed_at TEXT
     );
   `);
+  const jobColumns = new Set((db.prepare("PRAGMA table_info(investigation_jobs)").all() as Array<{ name: string }>).map(({ name }) => name));
+  if (!jobColumns.has("relevant_sources_json")) {
+    db.exec("ALTER TABLE investigation_jobs ADD COLUMN relevant_sources_json TEXT");
+  }
+  if (!jobColumns.has("relevant_owner_user_ids_json")) {
+    db.exec("ALTER TABLE investigation_jobs ADD COLUMN relevant_owner_user_ids_json TEXT");
+  }
 }
 
 function migrateLegacyState(db: Database.Database, directory: string, env: NodeJS.ProcessEnv): void {

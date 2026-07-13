@@ -24,6 +24,15 @@ describe("llmApiKeys", () => {
   it("accepts a comma-separated pool pasted into LLM_API_KEY too", () => {
     expect(llmApiKeys({ LLM_API_KEY: "one,two" } as NodeJS.ProcessEnv)).toEqual(["one", "two"]);
   });
+
+  it("adds up to two optional Gemini keys to the shared pool", () => {
+    expect(llmApiKeys({
+      LLM_API_KEY: "primary",
+      GEMINI_API_KEY_2: " secondary ",
+      GEMINI_API_KEY_3: "primary"
+    } as NodeJS.ProcessEnv)).toEqual(["primary", "secondary"]);
+    expect(llmApiKeys({ GEMINI_API_KEY: "gemini-primary" } as NodeJS.ProcessEnv)).toEqual(["gemini-primary"]);
+  });
 });
 
 describe("roundRobinClient", () => {

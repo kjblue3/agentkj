@@ -124,13 +124,12 @@ export function selectDisplayTimeline(report: InvestigationResult): Investigatio
 
 /**
  * Reports render like a teammate's Slack message, not a form: the answer as prose, a light
- * "Sources" line with inline links, an optional connect hint on a miss, and — when the agent
- * has a next step in mind — ONE suggested follow-up with Do it / Skip buttons ("Do it" makes
- * the agent execute the follow-up itself). No headers, boards, or dividers.
+ * "Sources" line with inline links and an optional connect hint on a miss. No headers, boards,
+ * dividers, or controls that imply the read-only agent can execute an external action.
  */
-export function buildReportBlocks(report: InvestigationResult, reportId: string): SlackBlock[] {
+export function buildReportBlocks(report: InvestigationResult, connectionAttribution = ""): SlackBlock[] {
   const blocks: SlackBlock[] = [
-    { type: "section", text: { type: "mrkdwn", text: truncate(report.shortAnswer, 2900) } }
+    { type: "section", text: { type: "mrkdwn", text: truncate(`${report.shortAnswer}${connectionAttribution}`, 2900) } }
   ];
 
   if (report.suggestedConnection) {
@@ -140,7 +139,7 @@ export function buildReportBlocks(report: InvestigationResult, reportId: string)
         type: "mrkdwn",
         text:
           `💡 This looks like a *${report.suggestedConnection}* question, and you haven't connected it. ` +
-          `Say \`connect ${report.suggestedConnection}\` and I'll set it up — then ask me again.`
+          `Use \`/connect ${report.suggestedConnection}\` to start the private setup flow, then ask again.`
       }
     } as SlackBlock);
   }
@@ -154,23 +153,6 @@ export function buildReportBlocks(report: InvestigationResult, reportId: string)
         text: `Sources: ${sources.map((item) => `${iconFor(item.source)} <${item.url}|${truncate(item.title, 70)}>`).join("  ·  ")}`
       }]
     } as SlackBlock);
-  }
-
-  const followup = report.recommendedActions.find((action) => action.trim());
-  if (followup) {
-    blocks.push(
-      {
-        type: "section",
-        text: { type: "mrkdwn", text: `Want me to follow up? _${truncate(followup, 280)}_` }
-      } as SlackBlock,
-      {
-        type: "actions",
-        elements: [
-          { type: "button", text: { type: "plain_text", text: "Do it", emoji: true }, style: "primary", action_id: "followup_do", value: reportId },
-          { type: "button", text: { type: "plain_text", text: "Skip", emoji: true }, action_id: "followup_skip", value: reportId }
-        ]
-      } as SlackBlock
-    );
   }
 
   return blocks;

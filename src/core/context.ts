@@ -57,6 +57,8 @@ export interface InvestigationJob {
   id: string;
   context: InvestigationContext;
   question: string;
+  relevantSources?: string[];
+  relevantOwnerUserIds?: string[];
   status: InvestigationJobStatus;
   retryAt?: string;
   waitingConnectionId?: string;

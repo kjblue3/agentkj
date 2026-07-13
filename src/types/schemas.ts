@@ -38,7 +38,6 @@ export const investigationResultSchema = z.object({
   question: z.string(),
   shortAnswer: z.string(),
   confidence: z.enum(["low", "medium", "high"]),
-  connectors: z.array(z.string()).optional(),
   likelyRootCause: z.string(),
   timeline: z.array(timelineEventSchema),
   evidence: z.array(evidenceItemSchema),

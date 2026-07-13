@@ -1,41 +1,18 @@
 import request from "supertest";
 import { describe, expect, it } from "vitest";
 import { createApi } from "../src/api/server.js";
-import { InvestigationPipeline } from "../src/investigation/pipeline.js";
-import { createFixtureConnectors } from "./fixtures.js";
-import { scriptedLlm } from "./fakeLlm.js";
 
-const pipeline = new InvestigationPipeline(createFixtureConnectors(), {}, undefined, {}, scriptedLlm());
-const app = createApi(pipeline);
+const app = createApi();
 
 describe("HTTP API", () => {
   it("reports health", async () => {
     const response = await request(app).get("/health");
     expect(response.status).toBe(200);
-    expect(response.body.status).toBe("ok");
+    expect(response.body).toEqual({ status: "ok", service: "slack-detective" });
   });
 
-  it("investigates a question", async () => {
-    const response = await request(app)
-      .post("/investigate")
-      .send({ question: "Why did checkout latency spike?" });
-    expect(response.status).toBe(200);
-    expect(response.body.connectors).toContain("Fixture slack");
-    expect(response.body.timeline.length).toBeGreaterThan(2);
-  });
-
-  it("returns 503 instead of a templated answer when no language model is configured", async () => {
-    const keyless = createApi(new InvestigationPipeline(createFixtureConnectors(), {}, undefined, {}, null));
-    const response = await request(keyless)
-      .post("/investigate")
-      .send({ question: "Why did checkout latency spike?" });
-    expect(response.status).toBe(503);
-    expect(response.body.error).toContain("language model");
-  });
-
-  it("returns evidence by id", async () => {
-    const response = await request(app).get("/evidence/incident-checkout-1");
-    expect(response.status).toBe(200);
-    expect(response.body.source).toBe("incident");
+  it("does not expose a context-free investigation endpoint", async () => {
+    expect((await request(app).post("/investigate").send({ question: "What changed?" })).status).toBe(404);
+    expect((await request(app).get("/evidence/record-id")).status).toBe(404);
   });
 });

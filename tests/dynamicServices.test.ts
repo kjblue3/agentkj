@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-// verifySpecEndpoints probes drafted OAuth endpoints through safeFetch; fake the network here.
+// Endpoint verification is isolated from the network so responses remain deterministic.
 vi.mock("../src/security/publicUrl.js", () => ({
   safeFetch: vi.fn(async (url: string | URL) => {
     const href = String(url);
@@ -18,25 +18,25 @@ import { dynamicServiceSpecSchema } from "../src/services/dynamicSpec.js";
 import { compactResponse, DynamicToolProvider } from "../src/services/dynamicTools.js";
 
 const validSpec = {
-  id: "acmefit",
-  label: "AcmeFit",
-  aliases: ["acmefit"],
+  id: "runtime-fitness",
+  label: "Runtime Fitness",
+  aliases: ["runtime fitness"],
   domain: "the user's own workouts, distances, and training stats",
-  homepage: "https://acmefit.example",
-  apiHosts: ["acmefit.example", "api.acmefit.example"],
+  homepage: "https://fitness.example",
+  apiHosts: ["fitness.example", "api.fitness.example"],
   oauth: {
-    authorizeUrl: "https://acmefit.example/oauth/authorize",
-    tokenUrl: "https://acmefit.example/oauth/token",
+    authorizeUrl: "https://fitness.example/oauth/authorize",
+    tokenUrl: "https://fitness.example/oauth/token",
     scope: "read",
     extraAuthParams: {}
   },
-  setupInstructions: "Create an API app in AcmeFit developer settings and register {CALLBACK_URL}.",
+  setupInstructions: "Create a read-only API app in the service settings and register {CALLBACK_URL}.",
   tools: [
     {
       name: "list_workouts",
       description: "List the connected user's recent workouts.",
       method: "GET",
-      urlTemplate: "https://api.acmefit.example/v1/athletes/{accountId}/workouts",
+      urlTemplate: "https://api.fitness.example/v1/athletes/{accountId}/workouts",
       params: [{ name: "per_page", description: "Max results to return.", required: false, location: "query" }]
     }
   ]
@@ -60,7 +60,7 @@ describe("dynamicServiceSpecSchema", () => {
 
   it("rejects http URLs and placeholder hostnames", () => {
     const insecure = structuredClone(validSpec);
-    insecure.oauth.tokenUrl = "http://acmefit.example/oauth/token";
+    insecure.oauth.tokenUrl = "http://fitness.example/oauth/token";
     expect(dynamicServiceSpecSchema.safeParse(insecure).success).toBe(false);
 
     const hostInjection = structuredClone(validSpec);
@@ -83,7 +83,7 @@ describe("DynamicToolProvider", () => {
 
     const result = (await provider.call("connection_conn1__list_workouts", { per_page: "5" })) as { data: string; evidence: unknown[] };
     expect(safeFetchSpy).toHaveBeenCalledWith(
-      "https://api.acmefit.example/v1/athletes/42/workouts?per_page=5",
+      "https://api.fitness.example/v1/athletes/42/workouts?per_page=5",
       expect.objectContaining({ headers: expect.objectContaining({ Authorization: "Bearer tok" }) })
     );
     expect(result.data).toContain("Morning run");
@@ -110,7 +110,7 @@ describe("DynamicToolProvider", () => {
     await provider.call("connection_conn1__list_workouts", {});
 
     expect(safeFetchSpy).toHaveBeenCalledWith(
-      "https://api.acmefit.example/v1/athletes/42/workouts",
+      "https://api.fitness.example/v1/athletes/42/workouts",
       expect.objectContaining({ headers: expect.objectContaining({ Authorization: "Bearer tok" }) })
     );
   });
@@ -125,15 +125,15 @@ describe("synthesizeService", () => {
 
   it("returns a validated spec on the first good draft", async () => {
     const { client } = stubClient([JSON.stringify(validSpec)]);
-    const result = await synthesizeService("acmefit", client, "test-model");
-    expect("spec" in result && result.spec.id).toBe("acmefit");
+    const result = await synthesizeService("runtime fitness", client, "test-model");
+    expect("spec" in result && result.spec.id).toBe("runtime-fitness");
   });
 
   it("repairs once using the validator's complaints", async () => {
     const broken = structuredClone(validSpec) as Record<string, unknown>;
     delete broken.setupInstructions;
     const { client, create } = stubClient([JSON.stringify(broken), JSON.stringify(validSpec)]);
-    const result = await synthesizeService("acmefit", client, "test-model");
+    const result = await synthesizeService("runtime fitness", client, "test-model");
     expect(create).toHaveBeenCalledTimes(2);
     expect("spec" in result).toBe(true);
   });
@@ -166,29 +166,29 @@ describe("verifySpecEndpoints", () => {
     expect(await verifySpecEndpoints(dynamicServiceSpecSchema.parse(missing))).toContain("doesn't exist");
   });
 
-  it("tolerates token endpoints that 404 anonymous probes (GitHub-style) when the authorize endpoint answers", async () => {
-    const githubStyle = structuredClone(validSpec);
-    githubStyle.apiHosts = [...githubStyle.apiHosts, "missing.example"];
-    githubStyle.oauth.tokenUrl = "https://missing.example/login/oauth/access_token";
-    expect(await verifySpecEndpoints(dynamicServiceSpecSchema.parse(githubStyle))).toBeNull();
+  it("tolerates token endpoints that 404 anonymous probes when the authorize endpoint answers", async () => {
+    const opaqueTokenEndpoint = structuredClone(validSpec);
+    opaqueTokenEndpoint.apiHosts = [...opaqueTokenEndpoint.apiHosts, "missing.example"];
+    opaqueTokenEndpoint.oauth.tokenUrl = "https://missing.example/login/oauth/access_token";
+    expect(await verifySpecEndpoints(dynamicServiceSpecSchema.parse(opaqueTokenEndpoint))).toBeNull();
   });
 });
 
 describe("compactResponse", () => {
   it("keeps every list item when shrinking an oversized payload — no server left behind", () => {
-    const guilds = Array.from({ length: 12 }, (_, index) => ({
+    const records = Array.from({ length: 12 }, (_, index) => ({
       id: `10000000000000${index.toString().padStart(4, "0")}`,
-      name: `Guild Number ${index}`,
+      name: `Record Number ${index}`,
       icon: "a".repeat(400),
       banner: "b".repeat(400),
       permissions: "562949953421311",
       features: Array.from({ length: 12 }, (_, f) => `FEATURE_FLAG_${f}_${"x".repeat(30)}`)
     }));
-    const raw = JSON.stringify(guilds);
+    const raw = JSON.stringify(records);
     expect(raw.length).toBeGreaterThan(12_000);
     const compacted = compactResponse(raw);
     expect(compacted.length).toBeLessThanOrEqual(12_000);
-    for (let index = 0; index < 12; index++) expect(compacted).toContain(`Guild Number ${index}`);
+    for (let index = 0; index < 12; index++) expect(compacted).toContain(`Record Number ${index}`);
     const parsed = JSON.parse(compacted) as { name: string }[];
     expect(parsed).toHaveLength(12);
   });

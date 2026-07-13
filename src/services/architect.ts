@@ -65,7 +65,7 @@ export type ArchitectResult = { spec: DynamicServiceSpec } | { error: string };
 export async function verifySpecEndpoints(spec: DynamicServiceSpec): Promise<string | null> {
   // Authorization endpoints serve browsers: a real one answers a GET with SOMETHING (a login
   // redirect, a missing-param complaint) — a 404 means the path is invented. Token endpoints
-  // cannot be judged by status: GitHub's real one 404s every request whose client_id it doesn't
+  // cannot be judged by status: some providers return 404 for every client id they do not
   // recognize, and others 404 non-POST verbs. For those, reachability is the only honest
   // anonymous signal — a hallucinated host still fails DNS, which is the failure mode this
   // check exists to catch.

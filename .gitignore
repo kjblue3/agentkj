@@ -8,15 +8,7 @@ coverage/
 .DS_Store
 .idea/
 .vscode/
-.claude/*.local.json
-.venv/
-__pycache__/
-*.egg-info/
 data/userTokens.local.json
 data/remoteConnections.local.json
-# Local runtime state and migration backups — never commit (may contain live tokens/secrets).
-data/*.sqlite
-data/*.sqlite-shm
-data/*.sqlite-wal
-*.local.json.migrated.bak
-*.migrated.bak
+data/*.sqlite*
+data/*.migrated.bak

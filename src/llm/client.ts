@@ -1,7 +1,12 @@
 import OpenAI from "openai";
 
 export function llmApiKeys(env: NodeJS.ProcessEnv = process.env): string[] {
-  const values = [env.LLM_API_KEYS, env.LLM_API_KEY || env.OPENAI_API_KEY]
+  const values = [
+    env.LLM_API_KEYS,
+    env.LLM_API_KEY || env.OPENAI_API_KEY || env.GEMINI_API_KEY,
+    env.GEMINI_API_KEY_2,
+    env.GEMINI_API_KEY_3
+  ]
     .flatMap((value) => value?.split(",") ?? [])
     .map((key) => key.trim())
     .filter(Boolean);

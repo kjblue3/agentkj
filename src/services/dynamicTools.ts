@@ -59,8 +59,8 @@ export class DynamicToolProvider implements AgentToolProvider {
   constructor(
     private readonly spec: DynamicServiceSpec,
     private readonly token: StoredServiceToken,
-    private readonly connectionId = `${spec.id}:unknown`,
-    private readonly ownerUserId = "unknown"
+    private readonly connectionId: string,
+    private readonly ownerUserId: string
   ) {}
 
   async listAgentTools(): Promise<ChatCompletionTool[]> {

@@ -12,7 +12,7 @@ Members can start the private flow with `/connect <service or remote MCP URL>`. 
 4. A current Slack workspace administrator reviews the hosts, registers the callback URL, and stores the shared client ID and secret.
 5. Each member authorizes their own provider account.
 
-The resulting connection is available to investigations in that Slack workspace. Tokens remain associated with their owner so reports can disclose which members' connections contributed without exposing account identifiers.
+Tokens remain associated with their Slack owner. Personal questions use only the requester’s eligible connections; named-member and workspace-wide questions may use other authorized connections when the prompt calls for comparison or corroboration. Reports disclose contributing Slack owners without exposing external account identifiers.
 
 The service specification’s `domain` describes what the connection holds and is surfaced to the agent during the full-source sweep. It should say precisely what records the service can answer questions from; vague marketing copy makes the agent's tool selection during a sweep less reliable.
 

@@ -1,24 +1,23 @@
 # Slack Detective
 
-Slack Detective is a Slack-native investigation agent. It builds read-only integrations at runtime, searches authorized workspace connections, and posts evidence-backed answers in shared Slack threads.
+Slack Detective is a Slack-native, read-only investigation agent. It builds service integrations from validated runtime specifications, searches only authorized sources, and posts evidence-backed answers in the originating Slack conversation.
 
-Ask one general question—without naming a provider—and Slack Detective sweeps every authorized workspace connection, queries them, and combines their evidence into one cited answer that accounts for what each source did and did not show.
+## What it does
 
-## Highlights
+- Accepts normal prompts through `@Slack Detective` mentions and direct messages.
+- Uses `/connect <service name or HTTPS MCP URL>` as the only slash command; setup and authorization responses stay private.
+- Keeps every request bound to its workspace, channel, thread, requesting user, and delivery id.
+- Treats “my” and “mine” as the requesting user’s data, keeps named owners distinct, and allows broader multi-owner searches only when the question calls for workspace-wide evidence or comparison.
+- Namespaces tools by connection owner and service, normalizes returned records into one evidence schema, and cites only records actually returned by read-only tools.
+- Refuses requests to edit, send, merge, deploy, stop, schedule, or otherwise mutate external systems. It never claims those actions occurred.
 
-- Provider-neutral runtime integrations: validated OAuth/REST specifications and remote MCP servers rather than hardcoded vendors.
-- Multi-source investigations: tools are namespaced per connection, results are normalized into a common evidence schema, and one answer can cite several services or account owners.
-- Full-sweep investigations: every authorized connection is searched for each question; the agent reports what each source contributed instead of pre-guessing where the answer lives.
-- Slack-native privacy: use `/connect <service or MCP URL>` for private setup while investigation progress and cited results remain in the originating public thread.
-- Read-only security: HTTPS and host validation, encrypted credentials, per-workspace/user grants, live authorization checks, and untrusted-output redaction.
+## Runtime integrations
 
-## Behavior
+External services are not registered in first-party source. A connection request causes the integration architect to draft a read-only OAuth/REST specification, validate its HTTPS hosts and endpoints, and store the approved specification as runtime state. A current Slack workspace administrator configures the shared OAuth application; each member authorizes their own account privately.
 
-- External data services are not preset in the repository. Ask `connect <service>` and the integration architect drafts and verifies a runtime specification.
-- A Slack workspace administrator configures the provider OAuth application once, and is immediately handed a private link to connect their own account. Each other member then authorizes their own account privately.
-- Authorizing a connection makes it available to investigations initiated by members of that workspace. Investigation results are public in the originating thread; connection and account details remain private.
-- OAuth grants, jobs, actions, and connection metadata are stored transactionally in SQLite. Secrets are encrypted with AES-256-GCM.
-- Remote MCP servers remain experimental and untrusted. Their URLs are SSRF-checked and their tools remain permission-gated.
+Remote MCP servers are inspected before approval. Their URLs are checked against private and reserved networks, their tool permissions are revalidated on every call, and their output is treated as untrusted.
+
+User grants remain keyed by workspace, user, and service. Personal questions expose only the requester’s eligible grants to the agent. A workspace-wide investigation may use several authorized owners when corroboration is relevant, and the public result identifies the Slack owners whose connections contributed without revealing external account identifiers.
 
 ## Development
 
@@ -28,26 +27,29 @@ npm run dev
 npm run check
 ```
 
-Copy `.env.example` to `.env`. For durable OAuth state, configure `PUBLIC_BASE_URL`, `OAUTH_STATE_SECRET`, `STATE_ENCRYPTION_KEY`, and the Slack credentials.
+Copy `.env.example` to `.env`. Configure the Slack Socket Mode credentials and language-model backend. Durable OAuth deployments also require `PUBLIC_BASE_URL`, `OAUTH_STATE_SECRET`, `STATE_ENCRYPTION_KEY`, and a persistent `STATE_DB_PATH`.
 
-After applying `manifest.json` to the Slack app, connect sources privately with:
+Apply [manifest.json](manifest.json) to the Slack app, then start a private connection flow from any Slack conversation:
 
 ```text
 /connect <service name>
-/connect https://your-read-only-mcp.example/mcp
+/connect <HTTPS MCP URL>
 ```
 
-For submission delivery, use [SUBMISSION_CHECKLIST.md](SUBMISSION_CHECKLIST.md).
+The HTTP server exposes `/health` plus private OAuth, setup, and credential routes. Investigations are intentionally accepted only from Slack so every run has a complete `InvestigationContext`.
 
-## Slack visibility
+## Security and visibility
 
-- Private: connection requests, setup and authorization links, connector listings, reauthorization, credentials, and account details.
-- Public thread: acknowledgements, queue/capacity updates, investigation progress, reports, failures, and follow-ups.
+- Private: connection inventory, setup links, authorization links, reauthorization, credentials, and external account details.
+- Originating conversation: truthful investigation status, cited results, failures, and normal follow-up prompts.
+- Stored state: SQLite with WAL, foreign keys, transactional updates, and AES-256-GCM encryption for secrets.
+- Dynamic tools: read-only, HTTPS-only, host-pinned, namespaced by connection, redirect-checked, and untrusted.
 
-## Generic OAuth routes
+## Limitations
 
-- `/auth/services/:serviceId`
-- `/auth/services/:serviceId/callback`
-- `/auth/service-setup/:secret`
+- Source localization depends on the accuracy of runtime service domains and live tool descriptions.
+- A provider’s API, granted scopes, and account permissions determine which records are searchable.
+- Broad questions may need a narrower follow-up when available tools exceed the agent’s iteration budget.
+- The repository cannot supply deployment URLs, workspace invitations, screenshots, a recorded product video, or submission links; those remain release-operator tasks in [SUBMISSION_CHECKLIST.md](SUBMISSION_CHECKLIST.md).
 
-Environment-provisioned service credentials use `<SERVICE_ID>_CLIENT_ID` and `<SERVICE_ID>_CLIENT_SECRET`. They take precedence over workspace configuration.
+See [ARCHITECTURE.md](ARCHITECTURE.md), [CONNECTORS.md](CONNECTORS.md), and [MULTI_SOURCE_CAPABILITIES.md](MULTI_SOURCE_CAPABILITIES.md) for the implementation boundaries.

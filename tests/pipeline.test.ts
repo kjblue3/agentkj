@@ -1,43 +1,86 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import type { AgentToolProvider } from "../src/agent/toolProvider.js";
+import { investigationContext } from "../src/core/context.js";
 import { InvestigationPipeline } from "../src/investigation/pipeline.js";
-import { createFixtureConnectors, fixtureQuestions } from "./fixtures.js";
-import { scriptedLlm } from "./fakeLlm.js";
+import type { EvidenceItem } from "../src/types/schemas.js";
 
-const answer = "The checkout latency spike traces back to the ORM upgrade that reintroduced an N+1 query.";
-const pipeline = new InvestigationPipeline(
-  createFixtureConnectors(),
-  {},
-  undefined,
-  {},
-  scriptedLlm(answer)
-);
+const record: EvidenceItem = {
+  id: "service:U1:record-1",
+  source: "runtime-service",
+  title: "Release decision",
+  body: "The release moved after the review found an unresolved dependency.",
+  url: "https://records.example/record-1",
+  timestamp: "2026-07-12T12:00:00.000Z",
+  entities: ["release"],
+  tags: ["decision"],
+  confidence: 0.9
+};
+
+function toolCall(name: string, args: Record<string, unknown>) {
+  return {
+    choices: [{
+      message: {
+        role: "assistant",
+        content: null,
+        tool_calls: [{ id: `call-${name}`, type: "function", function: { name, arguments: JSON.stringify(args) } }]
+      }
+    }]
+  };
+}
+
+function provider(): AgentToolProvider {
+  return {
+    listAgentTools: async () => [{
+      type: "function",
+      function: {
+        name: "connection_service_U1__search",
+        description: "Search the requesting user's release records.",
+        parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"] }
+      }
+    }],
+    has: (name) => name === "connection_service_U1__search",
+    call: async () => ({ evidence: [record] })
+  };
+}
 
 describe("investigation pipeline", () => {
-  it.each(fixtureQuestions)("answers through the agent with searched evidence for: %s", async (question) => {
-    const result = await pipeline.investigate(question);
-    expect(result.connectors).toContain("Fixture slack");
-    expect(result.shortAnswer).toBe(answer);
-    expect(result.evidence.length).toBeGreaterThanOrEqual(4);
-    expect(result.timeline.length).toBeGreaterThanOrEqual(4);
+  it("uses only runtime-provided tools and carries the requesting user into the agent scope", async () => {
+    const create = vi.fn()
+      .mockResolvedValueOnce(toolCall("connection_service_U1__search", { query: "release dependency" }))
+      .mockResolvedValueOnce(toolCall("finish", {
+        shortAnswer: "The release moved because review found an unresolved dependency.",
+        confidence: "high",
+        likelyRootCause: "An unresolved dependency remained at review time.",
+        citedEvidenceIds: [record.id],
+        openQuestions: [],
+        recommendedActions: ["Assign an owner to the dependency."]
+      }));
+    const pipeline = new InvestigationPipeline(undefined, {}, { chat: { completions: { create } } } as never);
+    const context = investigationContext({ workspaceId: "T1", channelId: "C1", threadTs: "1.1", userId: "U1" });
+
+    const result = await pipeline.investigate("Why did my release move?", {
+      context,
+      toolProviders: [provider()],
+      connectionDescriptors: [{
+        id: "service:U1",
+        workspaceId: "T1",
+        ownerUserId: "U1",
+        serviceId: "service",
+        serviceLabel: "Runtime Service",
+        domain: "release records",
+        scopes: ["records:read"],
+        health: "ready",
+        connectedAt: "2026-07-12T00:00:00.000Z"
+      }]
+    });
+
+    expect(result.evidence).toEqual([record]);
+    const firstCall = create.mock.calls[0]?.[0] as { messages: Array<{ content?: string }> };
+    expect(firstCall.messages.some((message) => message.content?.includes("Requesting Slack user: U1"))).toBe(true);
   });
 
-  it("keeps investigations separated by the ranked evidence search", async () => {
-    const result = await pipeline.investigate("Why was the recommendations launch delayed?");
-    expect(result.evidence.every((item) =>
-      item.tags.includes("recommendations") ||
-      item.entities.some((entity) => entity.toLowerCase().includes("recommend"))
-    )).toBe(true);
-  });
-
-  it("keeps Redis and session evidence out of the checkout timeline", async () => {
-    const result = await pipeline.investigate("Why did checkout latency spike?");
-    const timelineEvidenceIds = result.timeline.flatMap((event) => event.evidenceIds);
-    expect(timelineEvidenceIds.some((id) => /redis|session/.test(id))).toBe(false);
-    expect(result.evidence.some((item) => item.tags.includes("redis"))).toBe(false);
-  });
-
-  it("refuses to investigate without a language model instead of degrading to templates", async () => {
-    const keyless = new InvestigationPipeline(createFixtureConnectors(), {}, undefined, {}, null);
-    await expect(keyless.investigate("Why did checkout latency spike?")).rejects.toThrow("LLM_UNAVAILABLE");
+  it("refuses to investigate without a language model", async () => {
+    const pipeline = new InvestigationPipeline(undefined, {}, null);
+    await expect(pipeline.investigate("What changed?")).rejects.toThrow("LLM_UNAVAILABLE");
   });
 });
