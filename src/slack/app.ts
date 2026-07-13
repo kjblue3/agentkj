@@ -246,7 +246,6 @@ export async function handleSlackIntent(args: {
     pipeline,
     publicReply,
     conversationContext,
-    relevantSources: intent.relevantSources,
     acknowledgement: intent.acknowledgement,
     privateNotify,
     updatePublicStatus
@@ -287,15 +286,6 @@ async function handleConnect(target: string, context: InvestigationContext, priv
   await privateReply(await privateConnectMessage(service, context));
 }
 
-export function localizedProviders<T extends { serviceId: string }>(
-  providers: T[],
-  relevantSources: string[] | undefined
-): T[] {
-  if (relevantSources === undefined) return providers;
-  const selected = new Set(relevantSources);
-  return providers.filter((item) => selected.has(item.serviceId));
-}
-
 export function connectCommandTargets(text: string): string[] {
   const intent = heuristicIntent(`connect ${text.trim()}`);
   return intent.kind === "connect" ? intent.targets : [];
@@ -309,7 +299,7 @@ export async function handleConnectCommand(args: {
   const targets = connectCommandTargets(args.text);
   if (targets.length === 0) {
     await args.privateReply(
-      `Use \`/connect <service or MCP URL>\` — for example, \`/connect Google Sheets and https://example.com/mcp\`.\n\n` +
+      `Use \`/connect <service name or MCP URL>\` — you can list several separated by commas or \`and\`.\n\n` +
       `*Services available to connect:*\n${describeServices(args.context.workspaceId)}`
     );
     return;
@@ -324,13 +314,12 @@ export async function runInvestigation(args: {
   pipeline: InvestigationPipeline;
   publicReply: SlackReply;
   conversationContext?: string;
-  relevantSources?: string[];
   acknowledgement?: string;
   privateNotify?: (userId: string, message: string) => Promise<unknown>;
   excludedConnectionIds?: Set<string>;
   updatePublicStatus?: (messageTs: string, text: string) => Promise<unknown>;
 }): Promise<void> {
-  const { jobId, question, context, pipeline, publicReply, conversationContext, relevantSources, privateNotify } = args;
+  const { jobId, question, context, pipeline, publicReply, conversationContext, privateNotify } = args;
   const previousJob = getInvestigationJob(jobId);
   updateInvestigationJob(jobId, "running");
   const ackText = args.acknowledgement ?? "On it — tracing this through the workspace’s connected sources now.";
@@ -360,11 +349,10 @@ export async function runInvestigation(args: {
     const workspaceChatProvider = installation
       ? new SlackToolProvider(installation.botToken, installation.userToken)
       : undefined;
-    const serviceProviders = localizedProviders(available.providers, relevantSources)
-      .map(({ provider }) => provider);
-    const includeWorkspaceChat = Boolean(
-      workspaceChatProvider && (relevantSources === undefined || relevantSources.includes("slack"))
-    );
+    // Every authorized connection is always in scope: the agent sweeps all sources and reports
+    // what each one showed, instead of a classifier pre-guessing where the answer lives.
+    const serviceProviders = available.providers.map(({ provider }) => provider);
+    const includeWorkspaceChat = Boolean(workspaceChatProvider);
     const remoteProvider = new AuthorizedConnectionToolProvider({
       userId: context.userId,
       workspaceId: context.workspaceId,
@@ -380,7 +368,6 @@ export async function runInvestigation(args: {
         ...(publicUrl ? [new PublicWebToolProvider(publicUrl)] : [])
       ],
       connectionDescriptors: available.descriptors,
-      relevantSources,
       connectableServices: allServices().filter((service) =>
         !available.descriptors.some((connection) => connection.serviceId === service.id)
       ).map((service) => service.id),

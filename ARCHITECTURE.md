@@ -3,9 +3,9 @@
 ```mermaid
 flowchart LR
   U["General Slack question"] --> C["InvestigationContext<br/>workspace · channel · thread · actor · request"]
-  C --> I["Intent and source localizer"]
+  C --> I["Intent router"]
   D["Authorized connection catalog<br/>service domain · owner · scopes · health"] --> I
-  I --> S["Localized provider set"]
+  I --> S["Full authorized provider set"]
   S --> T1["Dynamic OAuth/REST tools"]
   S --> T2["Remote MCP tools"]
   S --> T3["Slack search"]
@@ -19,11 +19,11 @@ flowchart LR
   E --> D
 ```
 
-## Source localization and synthesis
+## Full-sweep investigation and synthesis
 
-Before an investigation starts, the intent classifier receives only the connected source IDs and each service’s declared data domain. It returns the subset plausibly relevant to the question even when the user never names a provider. Dynamic OAuth/REST providers and Slack search are then hard-limited to that subset. If classification has no source signal, providers remain available and the investigation agent performs tool-level selection from their descriptions. Remote MCP tools are selected at the agent stage because their capabilities come from live tool discovery rather than a service-domain specification.
+The intent router only classifies what an incoming message wants — investigate, connect, list, or help — and never pre-filters sources. Every investigation exposes all of the user's authorized connections (dynamic OAuth/REST tools, remote MCP tools, and Slack search) to the agent, which sweeps them and reports what each source did and did not contribute. Batching tool calls for different sources lets the sweep run in parallel within one agent turn.
 
-The agent may call several namespaced tools in one run. Dynamic REST and remote MCP responses are converted to `EvidenceItem` records, so data from different providers shares IDs, timestamps, URLs, source labels, and confidence metadata. The final answer may cite only evidence actually returned by those calls and must pass `investigationResultSchema`.
+The agent may call several namespaced tools in one run. Dynamic REST and remote MCP responses are converted to `EvidenceItem` records, so data from different providers shares IDs, timestamps, URLs, source labels, and confidence metadata. The agent never treats its own prior Slack replies as evidence. The final answer may cite only evidence actually returned by those calls and must pass `investigationResultSchema`.
 
 ## Isolation and resilience
 

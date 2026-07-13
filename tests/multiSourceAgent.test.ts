@@ -39,7 +39,7 @@ function toolCall(id: string, name: string, args: Record<string, unknown>) {
 }
 
 describe("multi-source agent investigations", () => {
-  it("combines two localized sources for a general question that names neither provider", async () => {
+  it("combines two connected sources for a general question that names neither provider", async () => {
     const create = vi.fn()
       .mockResolvedValueOnce(toolCall("call-sheets", "connection_sheets__search_rows", { query: "at-risk launches" }))
       .mockResolvedValueOnce(toolCall("call-discord", "connection_discord__search_messages", { query: "Atlas migration blocker" }))
@@ -76,8 +76,7 @@ describe("multi-source agent investigations", () => {
       externalCall: async (name) => {
         calls.push(name);
         return { evidence: [name.includes("sheets") ? sheetEvidence : discordEvidence] };
-      },
-      relevantSources: ["sheets", "discord"]
+      }
     });
 
     expect(calls).toEqual([

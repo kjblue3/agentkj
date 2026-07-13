@@ -6,7 +6,7 @@ Slack Detective turns fragmented workspace evidence into a cited, conversational
 
 The multi-user design preserves account ownership while allowing the agent to combine authorized workspace connections. Connection details remain private; investigation work remains visible and collaborative in a Slack thread.
 
-Transactional encrypted state, idempotent Slack handling, resumable authorization and capacity waits, and explicit cross-workspace isolation make the demo representative of a real shared agent rather than a single-user scripted integration.
+Transactional encrypted state, idempotent Slack handling, resumable authorization and capacity waits, and explicit cross-workspace isolation make it a real shared agent rather than a single-user scripted integration.
 
 Slack Detective qualifies through its MCP integration and Slack-native agent experience. Remote MCP servers can be inspected from Slack, approved only as read-only workspace connections, and authorized privately. Dynamic tools are HTTPS-only, host-pinned, redirect-checked, namespaced by connection, and treated as untrusted. Local operator MCP servers are configured explicitly and can never be created from Slack input.
 

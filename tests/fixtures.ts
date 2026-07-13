@@ -1,8 +1,43 @@
-import type { EvidenceItem } from "../types/schemas.js";
+import type { EvidenceConnector } from "../src/connectors/types.js";
+import type { EvidenceItem, EvidenceSource, InvestigationQuery } from "../src/types/schemas.js";
+import { tokenize } from "../src/utils/text.js";
 
-const url = (source: string, id: string) => `https://demo.acme.test/${source}/${id}`;
+/**
+ * Test-only evidence corpus and connector. The product ships no bundled evidence; investigations
+ * only ever see records returned by real authorized connectors. These fixtures exist so the
+ * pipeline, ranking, and rendering tests have deterministic multi-source data to chew on.
+ */
+export class FixtureConnector implements EvidenceConnector {
+  constructor(
+    public readonly name: string,
+    private readonly source: EvidenceSource,
+    private readonly items: EvidenceItem[]
+  ) {}
 
-export const demoEvidence: EvidenceItem[] = [
+  async search(query: InvestigationQuery): Promise<EvidenceItem[]> {
+    const needles = new Set([...query.keywords, ...query.entities, ...query.tags].flatMap(tokenize));
+    return this.items.filter((item) => {
+      if (item.source !== this.source) return false;
+      const haystack = new Set(
+        tokenize(`${item.title} ${item.body} ${item.entities.join(" ")} ${item.tags.join(" ")}`)
+      );
+      return [...needles].some((token) => haystack.has(token));
+    });
+  }
+
+  async getById(id: string): Promise<EvidenceItem | null> {
+    return this.items.find((item) => item.source === this.source && item.id === id) ?? null;
+  }
+}
+
+export function createFixtureConnectors(items: EvidenceItem[] = fixtureEvidence): EvidenceConnector[] {
+  const sources = [...new Set(items.map((item) => item.source))];
+  return sources.map((source) => new FixtureConnector(`Fixture ${source}`, source, items));
+}
+
+const url = (source: string, id: string) => `https://fixtures.example.test/${source}/${id}`;
+
+export const fixtureEvidence: EvidenceItem[] = [
   {
     id: "slack-checkout-1", source: "slack", title: "#checkout-alerts: p95 jumps after deploy",
     body: "Maya reports checkout p95 rose from 420ms to 2.8s within ten minutes of checkout-service v2.14.0. Traces show repeated tax_rule reads per cart item.",
@@ -76,34 +111,10 @@ export const demoEvidence: EvidenceItem[] = [
     entities: ["Redis", "auth gateway", "sessions"], tags: ["sessions", "redis", "architecture", "decision"], confidence: 1
   },
   {
-    id: "docs-redis-2", source: "docs", title: "Session storage alternatives review",
-    body: "Signed cookies were rejected because forced logout and role-change revocation were hard. Postgres was rejected due to connection pressure during traffic spikes.",
-    url: url("docs", "session-alternatives"), author: "Architecture Council", timestamp: "2021-08-10T17:00:00.000Z",
-    entities: ["Redis", "Postgres", "signed cookies"], tags: ["sessions", "alternatives", "architecture"], confidence: 0.98
-  },
-  {
     id: "incident-redis-1", source: "incident", title: "INC-119: Redis failover logged out users",
     body: "A failed cluster promotion caused a 14-minute session loss. The follow-up added multi-zone replication and graceful re-authentication, but did not replace Redis.",
     url: url("incident", "INC-119"), author: "SRE", timestamp: "2024-02-03T23:00:00.000Z",
     entities: ["Redis", "sessions", "INC-119"], tags: ["sessions", "redis", "incident", "failover"], confidence: 0.99
-  },
-  {
-    id: "tickets-redis-1", source: "tickets", title: "SEC-442: session revocation controls",
-    body: "Security review requires global logout within 60 seconds and revocation after privilege changes. The current Redis index meets this requirement; stateless cookies alone do not.",
-    url: url("tickets", "SEC-442"), author: "Security", timestamp: "2025-11-05T20:00:00.000Z",
-    entities: ["Redis", "sessions", "SEC-442"], tags: ["sessions", "security", "revocation", "redis"], confidence: 0.99
-  },
-  {
-    id: "slack-redis-1", source: "slack", title: "#identity-platform: who owns sessions?",
-    body: "Sam confirms Identity Platform still owns the Redis session service. A 2026 migration proposal is welcome, but it must preserve revocation and avoid auth database coupling.",
-    url: url("slack", "redis-owner"), author: "Sam Ortiz", timestamp: "2026-03-11T18:45:00.000Z",
-    entities: ["Identity Platform", "Redis", "sessions"], tags: ["sessions", "owner", "redis", "migration"], confidence: 0.95
-  },
-  {
-    id: "code-redis-1", source: "code", title: "Change #1660: evaluate encrypted session tokens",
-    body: "Prototype reduced Redis reads but retained a revocation lookup, removing most of the operational benefit. The issue was closed pending a better revocation design.",
-    url: url("code", "1660"), author: "Sam Ortiz", timestamp: "2025-12-09T19:00:00.000Z",
-    entities: ["Redis", "sessions", "Issue #1660"], tags: ["sessions", "alternative", "revocation", "prototype"], confidence: 0.93
   },
   {
     id: "slack-noise-1", source: "slack", title: "#random: office coffee machine",
@@ -113,8 +124,7 @@ export const demoEvidence: EvidenceItem[] = [
   }
 ];
 
-export const demoQuestions = [
+export const fixtureQuestions = [
   "Why did checkout latency spike?",
-  "Why was the recommendations launch delayed?",
-  "Why are we still using Redis for sessions?"
+  "Why was the recommendations launch delayed?"
 ];

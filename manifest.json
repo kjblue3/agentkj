@@ -17,7 +17,7 @@
       {
         "command": "/connect",
         "description": "Privately connect a data service or remote MCP server.",
-        "usage_hint": "Google Sheets and https://example.com/mcp",
+        "usage_hint": "<service name> or https://example.com/mcp",
         "should_escape": false
       }
     ],
@@ -25,12 +25,12 @@
       "assistant_description": "Ask Slack Detective why something happened at work. It searches accessible evidence, reconstructs a timeline, and returns a cited report.",
       "suggested_prompts": [
         {
-          "title": "Investigate checkout latency",
-          "message": "Why did checkout latency spike?"
+          "title": "See what's connected",
+          "message": "What sources are connected for this workspace?"
         },
         {
-          "title": "Investigate launch delay",
-          "message": "Why was the recommendations launch delayed?"
+          "title": "Start an investigation",
+          "message": "What happened with our latest release?"
         }
       ]
     }

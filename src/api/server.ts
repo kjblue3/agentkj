@@ -1,7 +1,6 @@
 import express from "express";
 import { z } from "zod";
 import type { InvestigationPipeline } from "../investigation/pipeline.js";
-import { demoQuestions } from "../data/demoData.js";
 import { registerMcpOAuthRoutes } from "../auth/mcpOAuthRoutes.js";
 import { registerServiceOAuthRoutes } from "../auth/serviceOAuth.js";
 import { registerServiceSetupRoutes } from "../auth/serviceSetup.js";
@@ -19,10 +18,6 @@ export function createApi(pipeline: InvestigationPipeline) {
 
   app.get("/health", (_request, response) => {
     response.json({ status: "ok", service: "slack-detective" });
-  });
-
-  app.get("/demo/questions", (_request, response) => {
-    response.json({ questions: demoQuestions });
   });
 
   app.get("/evidence/:id", async (request, response) => {

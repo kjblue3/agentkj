@@ -1,6 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { createConnectors } from "../src/connectors/index.js";
-import { demoEvidence } from "../src/data/demoData.js";
 import { InvestigationPipeline } from "../src/investigation/pipeline.js";
 import {
   buildReportBlocks,
@@ -8,11 +6,12 @@ import {
   selectDisplayTimeline
 } from "../src/slack/blocks.js";
 import type { InvestigationResult } from "../src/types/schemas.js";
+import { createFixtureConnectors, fixtureEvidence } from "./fixtures.js";
 import { scriptedLlm } from "./fakeLlm.js";
 
 const pipeline = new InvestigationPipeline(
-  createConnectors(demoEvidence),
-  { sourceMode: "demo" },
+  createFixtureConnectors(),
+  {},
   undefined,
   {},
   scriptedLlm("The checkout latency spike traces back to the ORM upgrade that reintroduced an N+1 query in the cart lookup.")
@@ -75,8 +74,8 @@ describe("Slack Block Kit rendering", () => {
 
   it("keeps the sources line free of Redis and coffee-machine noise", async () => {
     const report = await pipeline.investigate("Why did checkout latency spike?");
-    const redis = demoEvidence.find((item) => item.id === "docs-redis-1")!;
-    const coffee = demoEvidence.find((item) => item.id === "slack-noise-1")!;
+    const redis = fixtureEvidence.find((item) => item.id === "docs-redis-1")!;
+    const coffee = fixtureEvidence.find((item) => item.id === "slack-noise-1")!;
     const noisyReport: InvestigationResult = {
       ...report,
       evidence: [...report.evidence, redis, coffee]

@@ -7,8 +7,8 @@ import { rankEvidence } from "./ranker.js";
 const TOOL_NAME = "evidence_store__search";
 
 /**
- * Exposes this deployment's evidence connectors (seeded demo data or the operator-configured
- * real connectors) to the agent as one search tool, so every investigation path is agent-driven.
+ * Exposes this deployment's operator-configured evidence connectors to the agent as one search
+ * tool, so every investigation path is agent-driven.
  */
 export class EvidenceStoreToolProvider implements AgentToolProvider {
   constructor(private readonly connectors: EvidenceConnector[]) {}
@@ -19,7 +19,7 @@ export class EvidenceStoreToolProvider implements AgentToolProvider {
       type: "function",
       function: {
         name: TOOL_NAME,
-        description: "Search this deployment's evidence store (workspace chat, incidents, tickets, code changes) for records relevant to the investigation.",
+        description: "Search this deployment's configured evidence connectors for records relevant to the investigation.",
         parameters: {
           type: "object",
           properties: { query: { type: "string", description: "Focused search query." } },

@@ -8,14 +8,13 @@ import type { McpToolRegistry } from "../mcp/registry.js";
 import type { InvestigationResult } from "../types/schemas.js";
 import { EvidenceStoreToolProvider } from "./evidenceToolProvider.js";
 
-type InvestigationPipelineMetadata = { sourceMode?: InvestigationResult["sourceMode"]; connectors?: string[] };
+type InvestigationPipelineMetadata = { connectors?: string[] };
 
 export interface InvestigateOptions {
   context?: InvestigationContext;
   mcpRegistry?: McpToolRegistry;
   toolProviders?: AgentToolProvider[];
   connectionDescriptors?: ConnectionDescriptor[];
-  relevantSources?: string[];
   conversationContext?: string;
   connectableServices?: string[];
   allowGlobalTools?: boolean;
@@ -31,7 +30,7 @@ export class InvestigationPipeline {
 
   constructor(
     private readonly connectors: EvidenceConnector[],
-    private readonly metadata: InvestigationPipelineMetadata = { sourceMode: "demo" },
+    private readonly metadata: InvestigationPipelineMetadata = {},
     private readonly globalMcpRegistry?: McpToolRegistry,
     env: NodeJS.ProcessEnv = process.env,
     client?: OpenAI | null
@@ -55,7 +54,6 @@ export class InvestigationPipeline {
       externalCall: async (name, args) => providers.find((provider) => provider.has(name))?.call(name, args)
         ?? { error: `Unknown connector tool: ${name}` },
       connections: options.connectionDescriptors,
-      relevantSources: options.relevantSources,
       connectableServices: options.connectableServices,
       conversationContext: options.conversationContext
     });
@@ -71,6 +69,6 @@ export class InvestigationPipeline {
   }
 
   private withMetadata(result: InvestigationResult): InvestigationResult {
-    return { ...result, sourceMode: this.metadata.sourceMode, connectors: this.metadata.connectors ?? this.connectors.map((connector) => connector.name) };
+    return { ...result, connectors: this.metadata.connectors ?? this.connectors.map((connector) => connector.name) };
   }
 }

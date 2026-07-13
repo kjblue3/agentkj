@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { normalizeEvidence } from "../src/data/store.js";
+import { evidenceItemSchema } from "../src/types/schemas.js";
 
 describe("evidence normalization", () => {
   it("applies collection defaults and validates fields", () => {
-    const item = normalizeEvidence({
+    const item = evidenceItemSchema.parse({
       id: "sample",
       source: "docs",
       title: "A decision",
@@ -16,11 +16,11 @@ describe("evidence normalization", () => {
   });
 
   it("accepts sources it has never seen (services are an open set), but not empty ones", () => {
-    expect(normalizeEvidence({
+    expect(evidenceItemSchema.parse({
       id: "ok", source: "acmefit", title: "Run", body: "5 mi",
       url: "https://example.com", timestamp: "2026-01-01T00:00:00.000Z"
     }).source).toBe("acmefit");
-    expect(() => normalizeEvidence({
+    expect(() => evidenceItemSchema.parse({
       id: "bad", source: "", title: "Bad", body: "Bad",
       url: "https://example.com", timestamp: "2026-01-01T00:00:00.000Z"
     })).toThrow();

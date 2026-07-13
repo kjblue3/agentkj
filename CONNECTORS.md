@@ -14,7 +14,7 @@ Members can start the private flow with `/connect <service or remote MCP URL>`. 
 
 The resulting connection is available to investigations in that Slack workspace. Tokens remain associated with their owner so reports can disclose which members' connections contributed without exposing account identifiers.
 
-The service specification’s `domain` is part of source localization. It should say precisely what records the service can answer questions from; vague marketing copy makes automatic multi-source selection less reliable.
+The service specification’s `domain` describes what the connection holds and is surfaced to the agent during the full-source sweep. It should say precisely what records the service can answer questions from; vague marketing copy makes the agent's tool selection during a sweep less reliable.
 
 ## Remote MCP
 

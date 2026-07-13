@@ -4,24 +4,16 @@ import { LlmCapacityExhausted, llmReasoningOverride } from "../llm/client.js";
 /**
  * Decides what an incoming Slack message wants — with the LLM, not keyword prefixes. Users say
  * "hey can you hook up my <service>?" or paste a link to their account page; none of that survives
- * string matching. The classifier sees the user's connected/connectable sources so it can also
- * mark which connected sources are plausibly relevant to a question (the investigation then
- * never rummages through an unrelated source.
+ * string matching. The classifier sees the user's connected/connectable sources so it can resolve
+ * connect targets and elliptical follow-ups; investigations themselves always sweep every
+ * authorized source.
  *
  * The deterministic parse below is strictly a degraded fallback for when no LLM is configured
- * (tests, keyless demo mode) or the classification call itself fails — never the primary path.
+ * (tests, keyless deployments) or the classification call itself fails — never the primary path.
  */
 
 export type SlackIntent = (
-  | {
-      kind: "investigate";
-      /**
-       * Connected source ids that could plausibly hold the answer. Undefined means "no signal"
-       * (fallback path — don't gate anything); an empty array means the classifier judged NONE
-       * of the connected sources relevant.
-       */
-      relevantSources?: string[];
-    }
+  | { kind: "investigate" }
   | { kind: "connect"; targets: string[] }
   | { kind: "list_connectors" }
   | { kind: "approve" }
@@ -37,7 +29,7 @@ export interface IntentContext {
 }
 
 const CLASSIFIER_SYSTEM_PROMPT = `You route one Slack message sent to an investigation agent. Reply with JSON only:
-{"kind": "investigate" | "connect" | "list_connectors" | "approve" | "share" | "help", "targets"?: string[], "relevantSources"?: string[], "acknowledgement"?: string}
+{"kind": "investigate" | "connect" | "list_connectors" | "approve" | "share" | "help", "targets"?: string[], "acknowledgement"?: string}
 
 Rules, in priority order:
 For every kind, include one short, natural "acknowledgement" appropriate to what the user asked. Do not invent links, permissions, completion, or security facts.
@@ -45,10 +37,10 @@ For every kind, include one short, natural "acknowledgement" appropriate to what
 2. "connect": the user wants to link/hook up/add one or MORE services, accounts, data sources, or MCP servers — in ANY phrasing ("can you connect <name>", "add my <name> and <other> accounts", "hook this up: https://..."). Also choose connect when the message is essentially just a link to the user's own account/profile/dashboard on a service that requires login (a fitness profile, a SaaS workspace) — pasting it means they want that service's data. Set "targets" to the list of service names or URLs, one entry per service, exactly as the user referenced each. Short follow-ups count: when the message is an affirmative or elliptical reply ("then let's connect!", "yes hook it up", "ok do it") and the thread context shows a specific service was just discussed or reported as not connected, classify it connect and take that service name from the thread context as the target. Judge by meaning, not spelling — a misspelled or mangled request to link a service is still connect. But verify before choosing connect, because false positives launch real setup flows: the user must actually be asking to LINK a source; a question about a service, a mention of one, or a request to look something up IN one is investigate.
 3. "list_connectors": asking what data sources are connected to or available to connect to THIS agent. NOT follow-ups about things an earlier answer mentioned — when thread context shows an investigation and the new message refers back to it ("can you list them?", "show me those", "break that down"), that continues the investigation: classify it "investigate".
 4. "help": empty greetings, "what can you do".
-5. Everything else is "investigate": a question or task to research. Set "relevantSources" to the subset of the user's CONNECTED sources that could plausibly contain the answer, judged by each source's data domain — include a source only if the question's subject matter matches it; return [] when none fit. A plain public article link to read counts as investigate, not connect. Also write one short, natural acknowledgement that fits the request without claiming work is already complete.
+5. Everything else is "investigate": a question or task to research. A plain public article link to read counts as investigate, not connect. Also write one short, natural acknowledgement that fits the request without claiming work is already complete.
 
 Resolve pronouns and elliptical follow-ups against the recent thread context before choosing a kind.
-Never invent source ids not in the connected list. JSON only, no prose.`;
+JSON only, no prose.`;
 
 function safeParse(content: string): Record<string, unknown> | null {
   try {
@@ -140,10 +132,7 @@ export async function classifyIntent(
       return targets.length > 0 ? { kind: "connect", targets, ...(acknowledgement ? { acknowledgement } : {}) } : { kind: "help" };
     }
     if (kind === "investigate") {
-      const relevantSources = Array.isArray(parsed!.relevantSources)
-        ? parsed!.relevantSources.filter((id): id is string => typeof id === "string" && context.connected.includes(id))
-        : undefined;
-      return { kind: "investigate", relevantSources, ...(acknowledgement ? { acknowledgement } : {}) };
+      return { kind: "investigate", ...(acknowledgement ? { acknowledgement } : {}) };
     }
     return { kind, ...(acknowledgement ? { acknowledgement } : {}) } as SlackIntent;
   } catch (error) {

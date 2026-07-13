@@ -27,6 +27,7 @@ interface SlackMessageMatch {
   channel_id?: string;
   user?: string;
   username?: string;
+  bot_id?: string;
   ts?: string;
   text?: string;
   permalink?: string;
@@ -36,12 +37,19 @@ interface SlackAuthTestResponse {
   ok: boolean;
   user_id?: string;
   user?: string;
+  bot_id?: string;
+}
+
+interface BotIdentity {
+  userId?: string;
+  userName?: string;
+  botId?: string;
 }
 
 export class SlackConnector implements EvidenceConnector {
   readonly name = "Slack Web API";
   private readonly cache = new Map<string, EvidenceItem>();
-  private identity?: Promise<{ userId?: string; userName?: string }>;
+  private identity?: Promise<BotIdentity>;
 
   constructor(
     private readonly token: string,
@@ -76,20 +84,27 @@ export class SlackConnector implements EvidenceConnector {
   }
 
   /** Who this bot is in the workspace, resolved once so search can drop its own messages. */
-  private botIdentity(): Promise<{ userId?: string; userName?: string }> {
+  private botIdentity(): Promise<BotIdentity> {
     this.identity ??= fetchJson<SlackAuthTestResponse>(
       this.fetcher,
       "https://slack.com/api/auth.test",
       { method: "POST", headers: this.headers() },
       this.name
     )
-      .then((payload) => (payload?.ok ? { userId: payload.user_id, userName: payload.user } : {}))
+      .then((payload) => (payload?.ok ? { userId: payload.user_id, userName: payload.user, botId: payload.bot_id } : {}))
       .catch(() => ({}));
     return this.identity;
   }
 
-  private isOwnMessage(message: SlackMessageMatch, self: { userId?: string; userName?: string }): boolean {
-    return Boolean((self.userId && message.user === self.userId) || (self.userName && message.username === self.userName));
+  /**
+   * search.messages reports bot-authored posts inconsistently: sometimes with the bot's user id,
+   * sometimes only with a bot_id plus the app's display name in `username`. Match on all three or
+   * the agent ends up citing its own earlier answers back at the user.
+   */
+  private isOwnMessage(message: SlackMessageMatch, self: BotIdentity): boolean {
+    if (self.userId && message.user === self.userId) return true;
+    if (self.botId && message.bot_id === self.botId) return true;
+    return Boolean(self.userName && message.username && message.username.toLowerCase() === self.userName.toLowerCase());
   }
 
   async getById(id: string): Promise<EvidenceItem | null> {

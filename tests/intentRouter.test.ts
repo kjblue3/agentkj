@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { classifyIntent, heuristicIntent } from "../src/slack/intentRouter.js";
-import { connectCommandTargets, localizedProviders } from "../src/slack/app.js";
+import { connectCommandTargets } from "../src/slack/app.js";
 
 describe("intent routing", () => {
   it("parses provider-neutral connection targets", () => {
@@ -12,16 +12,10 @@ describe("intent routing", () => {
     expect(connectCommandTargets("https://records.example/mcp")).toEqual(["https://records.example/mcp"]);
     expect(connectCommandTargets(" ")).toEqual([]);
   });
-  it("hard-limits dynamic tools to the sources localized by the classifier", () => {
-    const providers = [{ serviceId: "sheets" }, { serviceId: "discord" }, { serviceId: "calendar" }];
-    expect(localizedProviders(providers, ["sheets", "discord"])).toEqual(providers.slice(0, 2));
-    expect(localizedProviders(providers, [])).toEqual([]);
-    expect(localizedProviders(providers, undefined)).toEqual(providers);
-  });
-  it("keeps only source ids present in the workspace catalog", async () => {
-    const create = vi.fn(async () => ({ choices: [{ message: { content: JSON.stringify({ kind: "investigate", relevantSources: ["acmefit", "invented"] }) } }] }));
+  it("classifies research questions as investigate without gating any sources", async () => {
+    const create = vi.fn(async () => ({ choices: [{ message: { content: JSON.stringify({ kind: "investigate", relevantSources: ["acmefit"] }) } }] }));
     await expect(classifyIntent("why did my pace change?", { connected: ["acmefit"], connectableSummary: "acmefit" }, { chat: { completions: { create } } } as never, "model"))
-      .resolves.toEqual({ kind: "investigate", relevantSources: ["acmefit"] });
+      .resolves.toEqual({ kind: "investigate" });
   });
   it("hands the classifier the thread transcript so follow-ups can be read in context", async () => {
     const create = vi.fn(async () => ({ choices: [{ message: { content: JSON.stringify({ kind: "investigate" }) } }] }));
