@@ -333,10 +333,26 @@ export async function runInvestigation(args: {
   const { jobId, question, context, pipeline, publicReply, conversationContext, relevantSources, privateNotify } = args;
   const previousJob = getInvestigationJob(jobId);
   updateInvestigationJob(jobId, "running");
-  if (previousJob?.statusMessageTs && args.updatePublicStatus) {
-    await args.updatePublicStatus(previousJob.statusMessageTs, "We’re back! Capacity freed up, so I’ve resumed this investigation.");
+  const ackText = args.acknowledgement ?? "On it — tracing this through the workspace’s connected sources now.";
+  let statusTs = previousJob?.statusMessageTs;
+  if (statusTs && args.updatePublicStatus) {
+    await args.updatePublicStatus(statusTs, "We’re back! Capacity freed up, so I’ve resumed this investigation.");
   } else {
-    await publicReply(args.acknowledgement ?? "On it — tracing this through the workspace’s connected sources now.");
+    const posted = await publicReply(ackText);
+    statusTs = posted && typeof posted === "object" && "ts" in posted ? String((posted as { ts: unknown }).ts) : undefined;
+  }
+  // Visible heartbeat: keep editing the acknowledgement while the agent works so a slow
+  // investigation never looks dead in the thread.
+  let heartbeat: NodeJS.Timeout | undefined;
+  if (statusTs && args.updatePublicStatus) {
+    const startedAt = Date.now();
+    const update = args.updatePublicStatus;
+    const messageTs = statusTs;
+    heartbeat = setInterval(() => {
+      const seconds = Math.round((Date.now() - startedAt) / 1000);
+      void update(messageTs, `${ackText}\n_Still working (${seconds}s) — the answer will land right here…_`).catch(() => undefined);
+    }, 15_000);
+    heartbeat.unref?.();
   }
   try {
     const available = await connectionDescriptors(context.workspaceId, args.excludedConnectionIds);
@@ -357,7 +373,6 @@ export async function runInvestigation(args: {
     const publicUrl = extractPublicUrl(question);
     const report = await pipeline.investigate(question, {
       context,
-      publicUrl,
       toolProviders: [
         ...serviceProviders,
         remoteProvider,
@@ -369,8 +384,7 @@ export async function runInvestigation(args: {
       connectableServices: allServices().filter((service) =>
         !available.descriptors.some((connection) => connection.serviceId === service.id)
       ).map((service) => service.id),
-      conversationContext,
-      requireLlm: true
+      conversationContext
     });
     updateInvestigationJob(jobId, "completed", { result: report });
     const actionId = createActionIntent({
@@ -388,6 +402,8 @@ export async function runInvestigation(args: {
     const posted = await publicReply({ text: `${report.shortAnswer}${attribution}`, blocks: buildReportBlocks(report, actionId) });
     const postedTs = posted && typeof posted === "object" && "ts" in posted ? String((posted as { ts: unknown }).ts) : undefined;
     if (postedTs) bindActionIntentMessage(actionId, postedTs);
+    if (heartbeat) clearInterval(heartbeat);
+    if (statusTs && args.updatePublicStatus) await args.updatePublicStatus(statusTs, ackText).catch(() => undefined);
   } catch (error) {
     if (error instanceof ConnectionAccessError && error.connectionId && error.ownerUserId) {
       updateInvestigationJob(jobId, "waiting_for_authorization", { waitingConnectionId: error.connectionId });
@@ -412,6 +428,8 @@ export async function runInvestigation(args: {
     }
     updateInvestigationJob(jobId, "failed");
     await publicReply("Ugh, something went wrong and I couldn’t finish this one. Nothing sensitive was exposed — give it another try in a bit.");
+  } finally {
+    if (heartbeat) clearInterval(heartbeat);
   }
 }
 

@@ -43,6 +43,10 @@ export function createApi(pipeline: InvestigationPipeline) {
         response.status(400).json({ error: "Invalid request", details: error.issues });
         return;
       }
+      if (error instanceof Error && error.message === "LLM_UNAVAILABLE") {
+        response.status(503).json({ error: "No language model is configured. Set LLM_API_KEY to enable investigations." });
+        return;
+      }
       next(error);
     }
   });

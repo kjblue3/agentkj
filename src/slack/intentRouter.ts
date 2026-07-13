@@ -1,5 +1,5 @@
 import type OpenAI from "openai";
-import { LlmCapacityExhausted } from "../llm/client.js";
+import { LlmCapacityExhausted, llmReasoningOverride } from "../llm/client.js";
 
 /**
  * Decides what an incoming Slack message wants — with the LLM, not keyword prefixes. Users say
@@ -42,11 +42,12 @@ const CLASSIFIER_SYSTEM_PROMPT = `You route one Slack message sent to an investi
 Rules, in priority order:
 For every kind, include one short, natural "acknowledgement" appropriate to what the user asked. Do not invent links, permissions, completion, or security facts.
 1. "approve <id> ..." and "share <id> ..." are literal bot-issued commands — return those kinds only for messages that start with those words followed by an id.
-2. "connect": the user wants to link/hook up/add one or MORE services, accounts, data sources, or MCP servers — in ANY phrasing ("can you connect <name>", "add my <name> and <other> accounts", "hook this up: https://..."). Also choose connect when the message is essentially just a link to the user's own account/profile/dashboard on a service that requires login (a fitness profile, a SaaS workspace) — pasting it means they want that service's data. Set "targets" to the list of service names or URLs, one entry per service, exactly as the user referenced each.
+2. "connect": the user wants to link/hook up/add one or MORE services, accounts, data sources, or MCP servers — in ANY phrasing ("can you connect <name>", "add my <name> and <other> accounts", "hook this up: https://..."). Also choose connect when the message is essentially just a link to the user's own account/profile/dashboard on a service that requires login (a fitness profile, a SaaS workspace) — pasting it means they want that service's data. Set "targets" to the list of service names or URLs, one entry per service, exactly as the user referenced each. Short follow-ups count: when the message is an affirmative or elliptical reply ("then let's connect!", "yes hook it up", "ok do it") and the thread context shows a specific service was just discussed or reported as not connected, classify it connect and take that service name from the thread context as the target. Judge by meaning, not spelling — a misspelled or mangled request to link a service is still connect. But verify before choosing connect, because false positives launch real setup flows: the user must actually be asking to LINK a source; a question about a service, a mention of one, or a request to look something up IN one is investigate.
 3. "list_connectors": asking what data sources are connected to or available to connect to THIS agent. NOT follow-ups about things an earlier answer mentioned — when thread context shows an investigation and the new message refers back to it ("can you list them?", "show me those", "break that down"), that continues the investigation: classify it "investigate".
 4. "help": empty greetings, "what can you do".
 5. Everything else is "investigate": a question or task to research. Set "relevantSources" to the subset of the user's CONNECTED sources that could plausibly contain the answer, judged by each source's data domain — include a source only if the question's subject matter matches it; return [] when none fit. A plain public article link to read counts as investigate, not connect. Also write one short, natural acknowledgement that fits the request without claiming work is already complete.
 
+Resolve pronouns and elliptical follow-ups against the recent thread context before choosing a kind.
 Never invent source ids not in the connected list. JSON only, no prose.`;
 
 function safeParse(content: string): Record<string, unknown> | null {
@@ -99,7 +100,9 @@ export async function classifyIntent(
     const response = await client.chat.completions.create({
       model,
       temperature: 0,
-      max_tokens: 200,
+      max_tokens: 500,
+      // Routing errors are the most visible failures; give this one cheap call real thought.
+      ...llmReasoningOverride("low"),
       response_format: { type: "json_object" },
       messages: [
         { role: "system", content: CLASSIFIER_SYSTEM_PROMPT },

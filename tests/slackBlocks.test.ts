@@ -1,25 +1,21 @@
 import { describe, expect, it } from "vitest";
 import { createConnectors } from "../src/connectors/index.js";
 import { demoEvidence } from "../src/data/demoData.js";
-import { fallbackSynthesis } from "../src/investigation/fallbackSynthesis.js";
 import { InvestigationPipeline } from "../src/investigation/pipeline.js";
-import type { Synthesizer } from "../src/openai/synthesizer.js";
 import {
   buildReportBlocks,
   selectDisplayEvidence,
   selectDisplayTimeline
 } from "../src/slack/blocks.js";
 import type { InvestigationResult } from "../src/types/schemas.js";
-
-const deterministicSynthesizer: Synthesizer = {
-  async synthesize(question, evidence, timeline) {
-    return fallbackSynthesis(question, evidence, timeline);
-  }
-};
+import { scriptedLlm } from "./fakeLlm.js";
 
 const pipeline = new InvestigationPipeline(
   createConnectors(demoEvidence),
-  deterministicSynthesizer
+  { sourceMode: "demo" },
+  undefined,
+  {},
+  scriptedLlm("The checkout latency spike traces back to the ORM upgrade that reintroduced an N+1 query in the cart lookup.")
 );
 
 function blockText(block: unknown): string {
