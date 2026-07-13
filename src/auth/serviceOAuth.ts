@@ -5,14 +5,61 @@ import {
   consumeOAuthIntent,
   createOAuthIntent,
   getStoredServiceToken,
+  getWorkspaceClientCredentials,
+  invalidateWorkspaceServiceConfig,
   setStoredServiceToken,
   type StoredServiceToken
 } from "../state/repositories.js";
+import { listWorkspaceAdministrators } from "./workspaceAdmin.js";
 import { signOAuthState, verifyOAuthState } from "./oauthState.js";
 import { renderPage } from "./htmlPage.js";
 import { directMessageUser } from "../slack/notify.js";
 
 const refreshes = new Map<string, Promise<StoredServiceToken | undefined>>();
+
+type TokenFields = Omit<StoredServiceToken, "connectedAt" | "health" | "scopes">;
+type ExchangeResult = { token: TokenFields } | { deadClient: true } | { failed: true };
+
+/**
+ * "invalid_client"/"unauthorized_client" from a token endpoint means the client id/secret itself
+ * is no longer accepted — the OAuth app was deleted or its secret rotated. That is distinct from
+ * an expired user token, and it can't be fixed by re-authorizing; the workspace must redo setup.
+ */
+function isDeadClientError(status: number, body: string): boolean {
+  if (status !== 400 && status !== 401) return false;
+  try {
+    const code = (JSON.parse(body) as { error?: unknown }).error;
+    const normalized = typeof code === "string" ? code.toLowerCase() : "";
+    return normalized === "invalid_client" || normalized === "unauthorized_client";
+  } catch {
+    return /\b(?:invalid_client|unauthorized_client)\b/i.test(body);
+  }
+}
+
+/**
+ * The provider disowned this workspace's OAuth app. Reset the config so the next /connect restarts
+ * setup, and DM every workspace admin a fresh setup link. Guarded so it fires once (invalidate
+ * returns false after the first call) and never touches environment-provisioned credentials.
+ */
+async function handleDeadWorkspaceClient(
+  service: ServiceDefinition,
+  workspaceId: string,
+  env: NodeJS.ProcessEnv
+): Promise<void> {
+  const creds = getWorkspaceClientCredentials(workspaceId, service.id, env);
+  if (!creds || creds.source !== "workspace") return;
+  if (!invalidateWorkspaceServiceConfig(workspaceId, service.id, "provider_rejected_client", env)) return;
+  const base = env.PUBLIC_BASE_URL?.replace(/\/$/, "");
+  const admins = await listWorkspaceAdministrators(workspaceId, env).catch(() => [] as string[]);
+  for (const adminId of admins) {
+    const link = base
+      ? ` <${base}/auth/service-setup/${createOAuthIntent({ kind: "setup", serviceId: service.id, workspaceId, userId: adminId, expectedVersion: 0 })}|Redo the one-time setup here>.`
+      : "";
+    await directMessageUser(workspaceId, adminId,
+      `Heads up — *${service.label}* stopped working. The provider rejected this workspace's OAuth app (it was deleted or its secret changed), so I've reset the connection. It needs a fresh one-time setup before anyone can use it again.${link}`
+    ).catch(() => undefined);
+  }
+}
 
 export function serviceConnectUrl(
   service: ServiceDefinition,
@@ -35,9 +82,9 @@ async function exchangeToken(
   workspaceId: string,
   params: Record<string, string>,
   env: NodeJS.ProcessEnv
-): Promise<Omit<StoredServiceToken, "connectedAt" | "health" | "scopes"> | null> {
+): Promise<ExchangeResult> {
   const creds = oauthClientCreds(service, workspaceId, env);
-  if (!creds) return null;
+  if (!creds) return { failed: true };
   const response = await fetch(service.oauth.tokenUrl, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
@@ -45,11 +92,14 @@ async function exchangeToken(
   });
   const text = await response.text();
   if (!response.ok) {
+    if (isDeadClientError(response.status, text)) return { deadClient: true };
     console.warn(`${service.label} token endpoint returned HTTP ${response.status}.`);
-    return null;
+    return { failed: true };
   }
-  try { return service.oauth.parseTokenResponse(JSON.parse(text) as Record<string, unknown>); }
-  catch { return null; }
+  try {
+    const token = service.oauth.parseTokenResponse(JSON.parse(text) as Record<string, unknown>);
+    return token ? { token } : { failed: true };
+  } catch { return { failed: true }; }
 }
 
 export async function getValidServiceToken(
@@ -69,9 +119,10 @@ export async function getValidServiceToken(
     const refreshed = await exchangeToken(service, workspaceId, {
       grant_type: "refresh_token", refresh_token: record.refreshToken
     }, env);
-    if (!refreshed) return undefined;
+    if ("deadClient" in refreshed) { await handleDeadWorkspaceClient(service, workspaceId, env); return undefined; }
+    if (!("token" in refreshed)) return undefined;
     const merged: StoredServiceToken = {
-      ...record, ...refreshed, refreshToken: refreshed.refreshToken ?? record.refreshToken,
+      ...record, ...refreshed.token, refreshToken: refreshed.token.refreshToken ?? record.refreshToken,
       scopes: record.scopes, health: "ready"
     };
     setStoredServiceToken(workspaceId, userId, service.id, merged, env);
@@ -118,12 +169,18 @@ export function registerServiceOAuthRoutes(app: Express, env: NodeJS.ProcessEnv 
       grant_type: "authorization_code", code,
       redirect_uri: `${baseUrl}/auth/services/${service.id}/callback`
     }, env);
-    if (!parsed) {
+    if ("deadClient" in parsed) {
+      await handleDeadWorkspaceClient(service, payload.workspaceId, env);
+      response.status(400).type("html").send(renderPage("Setup needs redoing",
+        `<p>This workspace's connection to ${escapeHtml(service.label)} is no longer valid — its OAuth app was removed or its credentials changed. I've reset it and messaged the workspace admins; ask an admin to run the one-time setup again from Slack.</p>`));
+      return;
+    }
+    if (!("token" in parsed)) {
       response.status(502).type("html").send(renderPage("Authorization failed", "<p>The authorization server did not return a usable access token. Try again from Slack.</p>"));
       return;
     }
     setStoredServiceToken(payload.workspaceId, payload.userId, service.id, {
-      ...parsed,
+      ...parsed.token,
       scopes: service.oauth.scope?.split(/\s+/).filter(Boolean) ?? [],
       health: "ready",
       connectedAt: new Date().toISOString()

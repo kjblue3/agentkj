@@ -12,6 +12,7 @@ import {
   createOAuthIntent,
   getStoredServiceToken,
   getWorkspaceClientCredentials,
+  invalidateWorkspaceServiceConfig,
   listDueCapacityJobs,
   listWorkspaceTokens,
   saveServiceSpec,
@@ -88,6 +89,18 @@ describe("workspace transactional state", () => {
       clientSecret: "env-secret",
       source: "environment"
     });
+  });
+
+  it("invalidates a dead workspace config so the next connect restarts setup", () => {
+    setWorkspaceClientCredentials({ workspaceId: "T-DEAD", serviceId: spec.id, clientId: "client", clientSecret: "secret", configuredBy: "UADMIN", expectedVersion: 0, env });
+    setStoredServiceToken("T-DEAD", "U1", spec.id, { token: "t", scopes: ["records:read"], health: "ready", connectedAt: new Date().toISOString() }, env);
+    expect(getWorkspaceClientCredentials("T-DEAD", spec.id, env)).toBeDefined();
+
+    expect(invalidateWorkspaceServiceConfig("T-DEAD", spec.id, "provider_rejected_client", env)).toBe(true);
+    expect(getWorkspaceClientCredentials("T-DEAD", spec.id, env)).toBeUndefined();
+    expect(getStoredServiceToken("T-DEAD", "U1", spec.id, env)?.health).toBe("revoked");
+    // Idempotent: a second call (concurrent refresh failures) reports nothing left to invalidate.
+    expect(invalidateWorkspaceServiceConfig("T-DEAD", spec.id, "provider_rejected_client", env)).toBe(false);
   });
 
   it("keeps same-workspace member grants separate while listing both as eligible", () => {

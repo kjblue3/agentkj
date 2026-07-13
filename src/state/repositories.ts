@@ -137,6 +137,38 @@ export function setWorkspaceClientCredentials(params: {
   return apply();
 }
 
+/**
+ * Tears down a workspace's stored OAuth app configuration for a service — used when the provider
+ * tells us the client credentials are dead (the app was deleted or its secret rotated). Dropping
+ * the config row makes isServiceConfigured() false again, so the next /connect restarts setup;
+ * the now-useless member tokens are marked revoked. Environment-provisioned credentials have no
+ * row to delete and are left untouched (returns false). Returns whether a workspace config existed.
+ */
+export function invalidateWorkspaceServiceConfig(
+  workspaceId: string,
+  serviceId: string,
+  reason: string,
+  env: NodeJS.ProcessEnv = process.env
+): boolean {
+  const db = stateDatabase(env);
+  const apply = db.transaction(() => {
+    const existing = db.prepare(`
+      SELECT version FROM workspace_service_configs WHERE workspace_id = ? AND service_id = ?
+    `).get(workspaceId, serviceId) as { version: number } | undefined;
+    if (!existing) return false;
+    db.prepare(`DELETE FROM workspace_service_configs WHERE workspace_id = ? AND service_id = ?`)
+      .run(workspaceId, serviceId);
+    db.prepare(`UPDATE service_tokens SET health = 'revoked' WHERE workspace_id = ? AND service_id = ?`)
+      .run(workspaceId, serviceId);
+    db.prepare(`
+      INSERT INTO audit_events (workspace_id, actor_user_id, action, target_id, metadata_json, created_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(workspaceId, "system", "service_config_invalidated", serviceId, JSON.stringify({ reason }), new Date().toISOString());
+    return true;
+  });
+  return apply();
+}
+
 export function setStoredServiceToken(
   workspaceId: string,
   userId: string,
