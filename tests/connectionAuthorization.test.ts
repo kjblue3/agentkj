@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
   connectionAuthorizationError,
+  remoteConnectorEvidence,
   selectAuthorizedConnections,
   type RemoteConnection,
   type RemoteToolDefinition
 } from "../src/mcp/connections.js";
+import { evidenceItemSchema } from "../src/types/schemas.js";
 
 const readTool: RemoteToolDefinition = {
   name: "search_pages",
@@ -35,6 +37,18 @@ function connection(overrides: Partial<RemoteConnection> = {}): RemoteConnection
 }
 
 describe("remote connection authorization", () => {
+  it("normalizes arbitrary MCP output into citable evidence", () => {
+    const item = remoteConnectorEvidence(
+      connection({ id: "sheets-1", name: "sheets.example", url: "https://sheets.example/mcp" }),
+      { name: "search_rows" },
+      { rows: [{ project: "Atlas", status: "late" }] },
+      new Date("2026-07-12T12:00:00.000Z")
+    );
+    expect(evidenceItemSchema.parse(item)).toEqual(item);
+    expect(item.body).toContain("Atlas");
+    expect(item.source).toBe("mcp:sheets.example");
+  });
+
   it("orders personal, shared, then delegated credentials", () => {
     const personal = connection({ id: "personal", ownerSlackUserId: "U1" });
     const shared = connection({

@@ -82,7 +82,7 @@ describe("workspace transactional state", () => {
   it("isolates workspace OAuth configuration and encrypts secrets", () => {
     setWorkspaceClientCredentials({ workspaceId: "T1", serviceId: spec.id, clientId: "client", clientSecret: "super-secret", configuredBy: "UADMIN", expectedVersion: 0, env });
     expect(getWorkspaceClientCredentials("T1", spec.id, env)?.clientSecret).toBe("super-secret");
-    expect(getWorkspaceClientCredentials("T2", spec.id, env)).toBeUndefined();
+    expect(getWorkspaceClientCredentials("T-ISOLATED-OTHER", spec.id, env)).toBeUndefined();
     expect(readFileSync(databasePath).includes(Buffer.from("super-secret"))).toBe(false);
     const provisioned = { ...env, ACME_RECORDS_CLIENT_ID: "env-client", ACME_RECORDS_CLIENT_SECRET: "env-secret" } as NodeJS.ProcessEnv;
     expect(getWorkspaceClientCredentials("T1", spec.id, provisioned)).toMatchObject({

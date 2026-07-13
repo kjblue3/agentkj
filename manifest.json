@@ -13,6 +13,14 @@
       "display_name": "Slack Detective",
       "always_online": true
     },
+    "slash_commands": [
+      {
+        "command": "/connect",
+        "description": "Privately connect a data service or remote MCP server.",
+        "usage_hint": "Google Sheets and https://example.com/mcp",
+        "should_escape": false
+      }
+    ],
     "assistant_view": {
       "assistant_description": "Ask Slack Detective why something happened at work. It searches accessible evidence, reconstructs a timeline, and returns a cited report.",
       "suggested_prompts": [

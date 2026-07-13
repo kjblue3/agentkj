@@ -48,7 +48,11 @@ export async function safeFetch(
   maxRedirects = MAX_REDIRECTS
 ): Promise<Response> {
   let url = await validatePublicUrl(String(rawUrl));
-  let requestInit = { ...init, redirect: "manual" as const };
+  let requestInit: RequestInit = {
+    ...init,
+    headers: new Headers(init.headers),
+    redirect: "manual"
+  };
 
   for (let redirect = 0; ; redirect += 1) {
     const response = await fetch(url, requestInit);
@@ -57,9 +61,20 @@ export async function safeFetch(
 
     const location = response.headers.get("location");
     if (!location) throw new UnsafeUrlError("The URL returned an invalid redirect.");
-    url = await validatePublicUrl(new URL(location, url).toString());
+    const nextUrl = await validatePublicUrl(new URL(location, url).toString());
+    if (nextUrl.origin !== url.origin) {
+      const headers = new Headers(requestInit.headers);
+      headers.delete("authorization");
+      headers.delete("cookie");
+      headers.delete("proxy-authorization");
+      requestInit = { ...requestInit, headers };
+    }
+    url = nextUrl;
     if (response.status === 303) {
-      requestInit = { method: "GET", headers: init.headers, redirect: "manual" };
+      const headers = new Headers(requestInit.headers);
+      headers.delete("content-length");
+      headers.delete("content-type");
+      requestInit = { method: "GET", headers, redirect: "manual" };
     }
   }
 }

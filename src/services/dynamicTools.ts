@@ -5,6 +5,7 @@ import { truncate } from "../connectors/connectorUtils.js";
 import type { EvidenceItem } from "../types/schemas.js";
 import { ConnectionAccessError } from "../core/context.js";
 import type { DynamicServiceSpec, DynamicTool } from "./dynamicSpec.js";
+import { safeFetch } from "../security/publicUrl.js";
 
 const RESPONSE_CHAR_LIMIT = 12_000;
 const LEAF_STRING_LIMIT = 160;
@@ -88,7 +89,7 @@ export class DynamicToolProvider implements AgentToolProvider {
     if (!tool) return { error: `Unknown ${this.spec.label} tool: ${name}` };
     try {
       const url = this.buildUrl(tool, args);
-      const response = await fetch(url, {
+      const response = await safeFetch(url, {
         headers: { Authorization: `Bearer ${this.token.token}`, Accept: "application/json" },
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
       });

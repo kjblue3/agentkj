@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { createConnectors } from "../src/connectors/index.js";
 import { demoEvidence, demoQuestions } from "../src/data/demoData.js";
 import { fallbackSynthesis } from "../src/investigation/fallbackSynthesis.js";
-import { InvestigationPipeline } from "../src/investigation/pipeline.js";
+import { ConfiguredEvidenceToolProvider, InvestigationPipeline } from "../src/investigation/pipeline.js";
 import type { Synthesizer } from "../src/openai/synthesizer.js";
 
 const deterministicSynthesizer: Synthesizer = {
@@ -17,6 +17,27 @@ const pipeline = new InvestigationPipeline(
 );
 
 describe("investigation pipeline", () => {
+  it("exposes relevant bundled evidence to the Slack agent demo path", async () => {
+    const provider = new ConfiguredEvidenceToolProvider(createConnectors(demoEvidence));
+    const [tool] = await provider.listAgentTools();
+    expect(tool?.type === "function" && provider.has(tool.function.name)).toBe(true);
+
+    const result = await provider.call("configured_evidence__search", {
+      query: "Why did checkout latency spike?"
+    }) as { evidence: typeof demoEvidence };
+    expect(result.evidence.length).toBeGreaterThanOrEqual(4);
+    expect(result.evidence.every((item) =>
+      item.tags.includes("checkout") || item.entities.some((entity) => entity.toLowerCase().includes("checkout"))
+    )).toBe(true);
+    expect(result.evidence.some((item) => item.id === "slack-noise-1")).toBe(false);
+  });
+
+  it("rejects empty configured-evidence searches without querying connectors", async () => {
+    const provider = new ConfiguredEvidenceToolProvider(createConnectors(demoEvidence));
+    await expect(provider.call("configured_evidence__search", { query: " " }))
+      .resolves.toEqual({ error: "A focused search query is required." });
+  });
+
   it.each(demoQuestions)("returns a meaningful timeline for: %s", async (question) => {
     const result = await pipeline.investigate(question);
     expect(result.sourceMode).toBe("demo");

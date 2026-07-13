@@ -22,15 +22,24 @@ export function signOAuthState(payload: OAuthStatePayload, env: NodeJS.ProcessEn
 
 export function verifyOAuthState(state: string, env: NodeJS.ProcessEnv = process.env): OAuthStatePayload | null {
   try {
-    const [encoded, signature] = state.split(".");
+    const parts = state.split(".");
+    if (parts.length !== 2) return null;
+    const [encoded, signature] = parts;
     if (!encoded || !signature) return null;
     const expected = createHmac("sha256", secret(env)).update(encoded).digest("base64url");
     const actualBuffer = Buffer.from(signature);
     const expectedBuffer = Buffer.from(expected);
     if (actualBuffer.length !== expectedBuffer.length || !timingSafeEqual(actualBuffer, expectedBuffer)) return null;
-    const payload = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8")) as OAuthStatePayload;
-    if (!payload.nonce || !payload.workspaceId || !payload.userId || !payload.serviceId || payload.expiresAt < Date.now()) return null;
-    return payload;
+    const payload = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8")) as Partial<OAuthStatePayload>;
+    if (
+      typeof payload.nonce !== "string" || !payload.nonce.trim() ||
+      typeof payload.workspaceId !== "string" || !payload.workspaceId.trim() ||
+      typeof payload.userId !== "string" || !payload.userId.trim() ||
+      typeof payload.serviceId !== "string" || !payload.serviceId.trim() ||
+      typeof payload.expiresAt !== "number" || !Number.isFinite(payload.expiresAt) ||
+      payload.expiresAt < Date.now()
+    ) return null;
+    return payload as OAuthStatePayload;
   } catch {
     return null;
   }

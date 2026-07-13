@@ -92,10 +92,10 @@ async function withInvestigationSlot(operation: () => Promise<void>): Promise<vo
 
 async function connectionDescriptors(workspaceId: string, excluded = new Set<string>()): Promise<{
   descriptors: ConnectionDescriptor[];
-  providers: ReturnType<ServiceDefinition["createToolProvider"]>[];
+  providers: Array<{ serviceId: string; provider: ReturnType<ServiceDefinition["createToolProvider"]> }>;
 }> {
   const descriptors: ConnectionDescriptor[] = [];
-  const providers: ReturnType<ServiceDefinition["createToolProvider"]>[] = [];
+  const providers: Array<{ serviceId: string; provider: ReturnType<ServiceDefinition["createToolProvider"]> }> = [];
   for (const record of listWorkspaceTokens(workspaceId)) {
     const service = findService(record.serviceId);
     if (!service) continue;
@@ -113,7 +113,10 @@ async function connectionDescriptors(workspaceId: string, excluded = new Set<str
       connectedAt: record.token.connectedAt
     });
     const token = await getValidServiceToken(service, workspaceId, record.userId);
-    if (token) providers.push(service.createToolProvider(token, connectionId, record.userId));
+    if (token) providers.push({
+      serviceId: service.id,
+      provider: service.createToolProvider(token, connectionId, record.userId)
+    });
   }
   return { descriptors, providers };
 }
@@ -284,6 +287,36 @@ async function handleConnect(target: string, context: InvestigationContext, priv
   await privateReply(await privateConnectMessage(service, context));
 }
 
+export function localizedProviders<T extends { serviceId: string }>(
+  providers: T[],
+  relevantSources: string[] | undefined
+): T[] {
+  if (relevantSources === undefined) return providers;
+  const selected = new Set(relevantSources);
+  return providers.filter((item) => selected.has(item.serviceId));
+}
+
+export function connectCommandTargets(text: string): string[] {
+  const intent = heuristicIntent(`connect ${text.trim()}`);
+  return intent.kind === "connect" ? intent.targets : [];
+}
+
+export async function handleConnectCommand(args: {
+  text: string;
+  context: InvestigationContext;
+  privateReply: SlackReply;
+}): Promise<void> {
+  const targets = connectCommandTargets(args.text);
+  if (targets.length === 0) {
+    await args.privateReply(
+      `Use \`/connect <service or MCP URL>\` — for example, \`/connect Google Sheets and https://example.com/mcp\`.\n\n` +
+      `*Services available to connect:*\n${describeServices(args.context.workspaceId)}`
+    );
+    return;
+  }
+  for (const target of targets) await handleConnect(target, args.context, args.privateReply);
+}
+
 export async function runInvestigation(args: {
   jobId: string;
   question: string;
@@ -311,6 +344,11 @@ export async function runInvestigation(args: {
     const workspaceChatProvider = installation
       ? new SlackToolProvider(installation.botToken, installation.userToken)
       : undefined;
+    const serviceProviders = localizedProviders(available.providers, relevantSources)
+      .map(({ provider }) => provider);
+    const includeWorkspaceChat = Boolean(
+      workspaceChatProvider && (relevantSources === undefined || relevantSources.includes("slack"))
+    );
     const remoteProvider = new AuthorizedConnectionToolProvider({
       userId: context.userId,
       workspaceId: context.workspaceId,
@@ -321,9 +359,9 @@ export async function runInvestigation(args: {
       context,
       publicUrl,
       toolProviders: [
-        ...available.providers,
+        ...serviceProviders,
         remoteProvider,
-        ...(workspaceChatProvider ? [workspaceChatProvider] : []),
+        ...(includeWorkspaceChat ? [workspaceChatProvider!] : []),
         ...(publicUrl ? [new PublicWebToolProvider(publicUrl)] : [])
       ],
       connectionDescriptors: available.descriptors,
@@ -451,6 +489,26 @@ export function createSlackApp(pipeline: InvestigationPipeline): App | null {
         appToken, socketMode: true, installationStore: installationStore as never,
         scopes: ["app_mentions:read", "channels:history", "chat:write", "groups:history", "im:history", "im:read", "im:write", "users:read"]
       });
+
+  app.command("/connect", async ({ command, ack, respond }) => {
+    await ack();
+    const context = investigationContext({
+      requestId: `slash:${command.trigger_id}`,
+      workspaceId: command.team_id,
+      channelId: command.channel_id,
+      threadTs: `slash:${command.trigger_id}`,
+      userId: command.user_id
+    });
+    const privateReply: SlackReply = (message) => {
+      const payload = typeof message === "string" ? { text: message } : message;
+      return respond({ response_type: "ephemeral", ...payload } as never);
+    };
+    try {
+      await handleConnectCommand({ text: command.text, context, privateReply });
+    } catch {
+      await privateReply("I couldn’t start that private connection flow. Please try again in a moment.");
+    }
+  });
 
   app.event("app_mention", async ({ event, client, body }) => {
     if (!("user" in event) || typeof event.user !== "string") return;

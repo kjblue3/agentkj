@@ -13,6 +13,7 @@ vi.mock("../src/security/publicUrl.js", () => ({
 }));
 
 import { synthesizeService, verifySpecEndpoints } from "../src/services/architect.js";
+import { safeFetch } from "../src/security/publicUrl.js";
 import { dynamicServiceSpecSchema } from "../src/services/dynamicSpec.js";
 import { compactResponse, DynamicToolProvider } from "../src/services/dynamicTools.js";
 
@@ -73,15 +74,15 @@ describe("DynamicToolProvider", () => {
   const token = { token: "tok", accountId: "42", connectedAt: "2026-07-10T00:00:00.000Z", scopes: [], health: "ready" as const };
 
   it("builds the request from the template, encodes substitutions, and returns evidence", async () => {
-    const fetchSpy = vi.fn(async () => new Response(JSON.stringify([{ id: 1, name: "Morning run" }]), { status: 200 }));
-    vi.stubGlobal("fetch", fetchSpy);
+    const safeFetchSpy = vi.mocked(safeFetch);
+    safeFetchSpy.mockResolvedValueOnce(new Response(JSON.stringify([{ id: 1, name: "Morning run" }]), { status: 200 }));
 
     const provider = new DynamicToolProvider(spec, token, "conn1", "U1");
     const tools = await provider.listAgentTools();
     expect(tools[0]!.type === "function" && tools[0]!.function.name).toBe("connection_conn1__list_workouts");
 
     const result = (await provider.call("connection_conn1__list_workouts", { per_page: "5" })) as { data: string; evidence: unknown[] };
-    expect(fetchSpy).toHaveBeenCalledWith(
+    expect(safeFetchSpy).toHaveBeenCalledWith(
       "https://api.acmefit.example/v1/athletes/42/workouts?per_page=5",
       expect.objectContaining({ headers: expect.objectContaining({ Authorization: "Bearer tok" }) })
     );
@@ -90,7 +91,7 @@ describe("DynamicToolProvider", () => {
   });
 
   it("reports a reconnect-worthy error on 401 instead of junk data", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => new Response("", { status: 401 })));
+    vi.mocked(safeFetch).mockResolvedValueOnce(new Response("", { status: 401 }));
     const provider = new DynamicToolProvider(spec, token, "conn1", "U1");
     await expect(provider.call("connection_conn1__list_workouts", {})).rejects.toMatchObject({
       name: "ConnectionAccessError",
@@ -98,6 +99,20 @@ describe("DynamicToolProvider", () => {
       connectionId: "conn1",
       ownerUserId: "U1"
     });
+  });
+
+  it("routes requests through the public-URL guard", async () => {
+    const safeFetchSpy = vi.mocked(safeFetch);
+    safeFetchSpy.mockClear();
+    safeFetchSpy.mockResolvedValueOnce(new Response("[]", { status: 200 }));
+    const provider = new DynamicToolProvider(spec, token, "conn1", "U1");
+
+    await provider.call("connection_conn1__list_workouts", {});
+
+    expect(safeFetchSpy).toHaveBeenCalledWith(
+      "https://api.acmefit.example/v1/athletes/42/workouts",
+      expect.objectContaining({ headers: expect.objectContaining({ Authorization: "Bearer tok" }) })
+    );
   });
 });
 
