@@ -10,6 +10,7 @@ import {
 } from "../state/repositories.js";
 import { signOAuthState, verifyOAuthState } from "./oauthState.js";
 import { renderPage } from "./htmlPage.js";
+import { directMessageUser } from "../slack/notify.js";
 
 const refreshes = new Map<string, Promise<StoredServiceToken | undefined>>();
 
@@ -128,6 +129,8 @@ export function registerServiceOAuthRoutes(app: Express, env: NodeJS.ProcessEnv 
       connectedAt: new Date().toISOString()
     }, env);
     response.type("html").send(renderPage("Connected", `<p>${escapeHtml(service.label)} is ready. Return to Slack and ask away.</p>`, { autoCloseSeconds: 5 }));
+    void directMessageUser(payload.workspaceId, payload.userId,
+      `Your *${service.label}* account is connected (read-only) and ready. Ask me anything that needs it — no need to run connect again.`);
   });
 }
 

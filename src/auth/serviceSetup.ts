@@ -10,6 +10,8 @@ import {
 import { isWorkspaceAdministrator } from "./workspaceAdmin.js";
 import { clientCredentialPreflight, type CredentialPreflight } from "./credentialPreflight.js";
 import { copyableValue, escapeHtml, linkifyHtml, renderPage } from "./htmlPage.js";
+import { serviceConnectUrl } from "./serviceOAuth.js";
+import { directMessageUser } from "../slack/notify.js";
 
 export function createServiceSetupIntent(
   serviceId: string,
@@ -101,7 +103,14 @@ export function registerServiceSetupRoutes(
         expectedVersion: intent.expectedVersion,
         env
       });
-      response.type("html").send(page(`${service.label} is ready`, "Workspace configuration saved. Members can now authorize their own accounts from Slack.", { autoCloseSeconds: 5 }));
+      response.type("html").send(page(`${service.label} is ready`, "Workspace configuration saved. Check Slack — I’ve sent you the link to connect your own account.", { autoCloseSeconds: 5 }));
+      // Close the loop in Slack: hand the administrator their own authorize link immediately
+      // instead of making them ask "connect <service>" a second time.
+      const connectUrl = serviceConnectUrl(service, intent.workspaceId, intent.userId, undefined, env);
+      if (connectUrl) {
+        void directMessageUser(intent.workspaceId, intent.userId,
+          `*${service.label}* is set up for this workspace! Next step: <${connectUrl}|connect your own account> (read-only). After you authorize, just ask me questions that need it.`);
+      }
     } catch (error) {
       response.status(409).type("html").send(page("Setup changed", escapeHtml(error instanceof Error ? error.message : "Request a fresh setup link.")));
     }
